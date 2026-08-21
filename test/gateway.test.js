@@ -61,7 +61,7 @@ function startGateway(upstream, overrides = {}) {
 
 function pairingService() {
   const store = { load: () => [], save() {} }
-  return createPairingService({ store, ttlMs: 300_000 })
+  return createPairingService({ store, ttlMs: 300_000, persistSessions: false })
 }
 
 const proofFor = (secret, sid, nonce, ts) =>

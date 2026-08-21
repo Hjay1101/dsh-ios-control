@@ -1,5 +1,7 @@
 # dsh-ios-control
 
+> Forked from [BotonJ/dsh-remote-link](https://github.com/BotonJ/dsh-remote-link)（MIT），本仓库为个人定制版。
+
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 把 DeepSeek Harness（DSH）的官方 Web UI **安全地**暴露到局域网——手机扫码即遥控电脑上的 agent——并给模型增加 `fork_session` 会话分叉工具。零核心改动、零运行时依赖。
@@ -49,6 +51,8 @@ dsh plugin --profile web add ./dsh-ios-control     # 本地目录
 | `pairing.sessionMaxAgeDays` | `30` | cookie 会话最长寿命 |
 | `pairing.deviceIdleExpiryDays` | `90` | 设备闲置自动出局 |
 | `pairing.devicesFile` | `$DSH_HOME/remote-link/devices.json` | 设备注册表（0600） |
+| `pairing.persistSessions` | `true` | 会话摘要落盘（0600），dsh 重启后已配对手机保持登录；`false` 回到"重启需重配对" |
+| `pairing.sessionsFile` | `$DSH_HOME/remote-link/sessions.json` | 会话文件路径；`persistSessions:false` 时忽略 |
 | `pairing.recoveryCode` | 空 | 长期恢复码（≥16 字符）的**静态配置方式**；推荐改用聊天工具：对 agent 说"设置恢复码"，`remote_recovery` 会生成高熵随机码、自动启用并提示保存（码只展示一次，落盘仅存 SHA-256 摘要，`$DSH_HOME/remote-link/recovery.json` 0600；再次生成即轮换，重启/HMR 存活）。用法：所有设备丢失时在 `/pair` 页"恢复接入"输入即可，每次恢复注册为可吊销设备 |
 | `notify.barkUrl` | 空 | Bark 推送地址（`https://api.day.app/<你的KEY>`） |
 | `notify.ntfyUrl` | 空 | ntfy 主题地址（`https://ntfy.sh/<私有主题>` 或自建） |

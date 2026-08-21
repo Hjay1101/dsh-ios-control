@@ -366,7 +366,7 @@ test('three unanswered pings evict the dead leg and clear it from the status pag
 
 test('legs carry device identity when the upgrade rides the pairing cookie', async () => {
   const upstream = await startEchoUpstream()
-  const service = createPairingService({ store: { load: () => [], save() {} }, ttlMs: 300_000 })
+  const service = createPairingService({ store: { load: () => [], save() {} }, ttlMs: 300_000, persistSessions: false })
   const gw = await startGatewayWithKeepalive(upstream, 0, {
     auth: createAuthenticator({
       username: 'dsh', password: 's3cret',

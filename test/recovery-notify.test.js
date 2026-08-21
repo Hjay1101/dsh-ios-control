@@ -25,7 +25,7 @@ const recoveryDir = mkdtempSync(join(tmpdir(), 'rl-recovery-test-'))
 
 function service(code = RECOVERY, file = join(recoveryDir, 'r-' + Math.random().toString(36).slice(2) + '.json')) {
   const store = { load: () => [], save() {} }
-  return createPairingService({ store, ttlMs: 300_000, recoveryFile: file, ...(code === null ? {} : { recoveryCode: code }) })
+  return createPairingService({ store, ttlMs: 300_000, recoveryFile: file, persistSessions: false, ...(code === null ? {} : { recoveryCode: code }) })
 }
 
 process.on('exit', () => rmSync(recoveryDir, { recursive: true, force: true }))
@@ -319,7 +319,7 @@ test('setRecoveryCode: persists, survives restart, supersedes config, rotates', 
   const dir = await fs.mkdtemp('/tmp/rl-recovery-')
   const file = `${dir}/recovery.json`
   const store = { load: () => [], save() {} }
-  const mk = (code) => createPairingService({ store, ttlMs: 300_000, recoveryFile: file, ...(code === null ? {} : { recoveryCode: code }) })
+  const mk = (code) => createPairingService({ store, ttlMs: 300_000, recoveryFile: file, persistSessions: false, ...(code === null ? {} : { recoveryCode: code }) })
 
   const svc = mk(null)
   assert.deepEqual(svc.recoveryStatus(), { enabled: false, source: null })
@@ -338,7 +338,7 @@ test('setRecoveryCode: persists, survives restart, supersedes config, rotates', 
   // Config code is the fallback only until the tool writes the file
   // (fresh store file: the rotation above must not leak into this section).
   const file2 = `${dir}/recovery2.json`
-  const mk2 = (code) => createPairingService({ store, ttlMs: 300_000, recoveryFile: file2, ...(code === null ? {} : { recoveryCode: code }) })
+  const mk2 = (code) => createPairingService({ store, ttlMs: 300_000, recoveryFile: file2, persistSessions: false, ...(code === null ? {} : { recoveryCode: code }) })
   const withConfig = mk2('config-code-config-code-config')
   assert.equal(withConfig.recoveryStatus().source, 'config')
   assert.equal((await withConfig.redeemRecovery({ code: 'config-code-config-code-config' })).ok, true)
@@ -357,7 +357,7 @@ test('setRecoveryCode: persists, survives restart, supersedes config, rotates', 
 test('recovery store file is 0600 and holds no plaintext', async () => {
   const dir = await fs.mkdtemp('/tmp/rl-recovery-')
   const file = `${dir}/recovery.json`
-  const svc = createPairingService({ store: { load: () => [], save() {} }, recoveryFile: file })
+  const svc = createPairingService({ store: { load: () => [], save() {} }, recoveryFile: file, persistSessions: false })
   const tool = defineRemoteRecoveryTool({ service: svc })
   const setup = await tool.execute({}, {})
   const raw = await fs.readFile(file, 'utf8')

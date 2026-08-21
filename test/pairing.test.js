@@ -26,7 +26,7 @@ function setup(overrides = {}) {
   const c = clock(1_000_000)
   const store = memoryStore()
   const service = createPairingService({
-    now: c.now, store, ttlMs: 300_000, sessionMaxAgeMs: 30 * 86_400_000, deviceIdleExpiryMs: 90 * 86_400_000,
+    now: c.now, store, ttlMs: 300_000, sessionMaxAgeMs: 30 * 86_400_000, deviceIdleExpiryMs: 90 * 86_400_000, persistSessions: false,
     ...overrides,
   })
   return { service, store, c }
@@ -143,12 +143,12 @@ test('revoke-all wipes the registry; revoke by name works', async () => {
 test('devices persist through the store and survive a restart', async () => {
   const store = memoryStore()
   const c = clock(5)
-  const first = createPairingService({ now: c.now, store })
+  const first = createPairingService({ now: c.now, store, persistSessions: false })
   const { ok } = await paired(first)
   assert.equal(store.snapshot().length, 1)
   assert.match(store.snapshot()[0].deviceKey, /^[0-9a-f]{64}$/)
 
-  const second = createPairingService({ now: c.now, store })
+  const second = createPairingService({ now: c.now, store, persistSessions: false })
   assert.deepEqual(second.listDevices().map((d) => d.deviceId), [ok.deviceId])
 })
 

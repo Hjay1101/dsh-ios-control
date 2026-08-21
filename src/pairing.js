@@ -73,6 +73,34 @@ function recoveryStore(filePath) {
   }
 }
 
+/**
+ * Session store: SHA-256 digests only, persisted 0600 next to the device
+ * registry. Reopening the service (host restart / plugin reload) rehydrates
+ * the table so paired phones stay logged in; revocation stays immediate
+ * because every revoke/prune path deletes persisted rows. Plaintext tokens
+ * never touch disk — a leaked file cannot mint cookies (hash is one-way),
+ * matching the recovery.json digest pattern. Non-atomic by design: a crash
+ * mid-write degrades to "re-pair devices", never to a security hole.
+ */
+function sessionsStore(filePath) {
+  const file = filePath ?? join(homedir(), '.dsh', 'remote-link', 'sessions.json')
+  return {
+    path: file,
+    load() {
+      try {
+        const parsed = JSON.parse(readFileSync(file, 'utf8'))
+        return Array.isArray(parsed) ? parsed : []
+      } catch {
+        return []
+      }
+    },
+    save(entries) {
+      mkdirSync(join(file, '..'), { recursive: true })
+      writeFileSync(file, JSON.stringify(entries, null, 2), { mode: 0o600 })
+    },
+  }
+}
+
 export function createPairingService(options = {}) {
   const {
     now = () => Date.now(),
@@ -84,6 +112,8 @@ export function createPairingService(options = {}) {
     recoveryCode = null,
     recoveryFile = null,
     exists = existsSync,
+    persistSessions = true,
+    sessionsFile = null,
   } = options
   void exists
   // Two sources, one effective hash: the tool-written store file wins (it is
@@ -99,9 +129,33 @@ export function createPairingService(options = {}) {
   const pairings = new Map() // sid → { sid, secret, shortCode, expiresAt }
   /** sid → { nonce, ts, expiresAt }; one live challenge per pairing */
   const nonces = new Map()
-  /** sha256(token) → { deviceId, expiresAt } */
-  const sessions = new Map()
   let devices = store.load()
+  const sstore = persistSessions ? sessionsStore(sessionsFile) : null
+  /** sha256(token) → { deviceId, expiresAt }; rehydrated so paired phones
+   *  survive restarts. Load-time filter drops expired rows and rows whose
+   *  device left the registry — revocation is durable across restarts too. */
+  function rehydrateSessions() {
+    if (sstore === null) return new Map()
+    const t = now()
+    const rows = sstore.load()
+    const kept = rows.filter((e) =>
+      typeof e?.digest === 'string' && e.digest.length > 0 &&
+      typeof e?.deviceId === 'string' &&
+      Number.isFinite(e?.expiresAt) && t < e.expiresAt &&
+      devices.some((d) => d.deviceId === e.deviceId))
+    if (kept.length !== rows.length) sstore.save(kept)
+    return new Map(kept.map((e) => [e.digest, { deviceId: e.deviceId, expiresAt: e.expiresAt }]))
+  }
+  /** Write the live table (digests only). Called on mint/revoke/prune —
+   *  NOT on resolveSession hits, so a busy phone never turns the plugin into
+   *  a write-every-request service. */
+  function saveSessions() {
+    if (sstore === null) return
+    sstore.save([...sessions].map(([digest, s]) => ({
+      digest, deviceId: s.deviceId, expiresAt: s.expiresAt,
+    })))
+  }
+  const sessions = rehydrateSessions()
 
   function pruneStale() {
     const t = now()
@@ -115,7 +169,16 @@ export function createPairingService(options = {}) {
         }
       }
     }
-    if (dirty) store.save(devices)
+    for (const [hash, session] of [...sessions]) {
+      if (t >= session.expiresAt) {
+        sessions.delete(hash)
+        dirty = true
+      }
+    }
+    if (dirty) {
+      store.save(devices)
+      saveSessions()
+    }
     for (const [sid, pairing] of [...pairings]) {
       if (t >= pairing.expiresAt) pairings.delete(sid)
     }
@@ -210,6 +273,7 @@ export function createPairingService(options = {}) {
       store.save(devices)
       const sessionToken = B64URL.encode(random())
       sessions.set(sha256Hex(sessionToken), { deviceId, expiresAt: t + sessionMaxAgeMs })
+      saveSessions()
       return { ok: true, deviceId, sessionToken }
     },
 
@@ -262,6 +326,7 @@ export function createPairingService(options = {}) {
       store.save(devices)
       const sessionToken = B64URL.encode(random())
       sessions.set(sha256Hex(sessionToken), { deviceId, expiresAt: t + sessionMaxAgeMs })
+      saveSessions()
       return { ok: true, deviceId, sessionToken }
     },
 
@@ -273,11 +338,13 @@ export function createPairingService(options = {}) {
       const t = now()
       if (t >= session.expiresAt) {
         sessions.delete(sha256Hex(token))
+        saveSessions()
         return null
       }
       const device = devices.find((d) => d.deviceId === session.deviceId)
       if (device === undefined) return null
       device.lastSeen = t
+      // Deliberately no save here: hot-path hits must not write per request.
       return { deviceId: session.deviceId }
     },
 
@@ -305,6 +372,7 @@ export function createPairingService(options = {}) {
           if (!ids.has(session.deviceId)) sessions.delete(hash)
         }
         store.save(devices)
+        saveSessions()
       }
       return removed
     },
@@ -314,6 +382,7 @@ export function createPairingService(options = {}) {
       devices = []
       sessions.clear()
       store.save(devices)
+      saveSessions()
       return removed
     },
   }

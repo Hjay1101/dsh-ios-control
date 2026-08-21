@@ -59,7 +59,7 @@ test('apply registers fork_session + remote_qr + remote_devices + remote_recover
   const ctx = fakeCtx()
   ctx.webServer = { port: upstream.port }
 
-  apply(ctx, { host: '127.0.0.1', port: 0, password: 'pw', pairing: { devicesFile: devicesFile() } })
+  apply(ctx, { host: '127.0.0.1', port: 0, password: 'pw', pairing: { devicesFile: devicesFile(), persistSessions: false } })
   await waitStartup()
 
   try {
@@ -79,7 +79,7 @@ test('pairing-enabled flow: /pair page, cookie issuance, UI access without passw
   const ctx = fakeCtx()
   ctx.webServer = { port: upstream.port }
 
-  apply(ctx, { host: '127.0.0.1', port: 0, pairing: { devicesFile: devicesFile() } })
+  apply(ctx, { host: '127.0.0.1', port: 0, pairing: { devicesFile: devicesFile(), persistSessions: false } })
   await waitStartup()
   const port = ctx.provided.remoteLinkGateway.port
 
@@ -136,7 +136,7 @@ test('remote_qr re-mints after the pairing is consumed — no dead QR on any sur
   const upstream = await startUpstream()
   const ctx = fakeCtx()
   ctx.webServer = { port: upstream.port }
-  apply(ctx, { host: '127.0.0.1', port: 0, pairing: { devicesFile: devicesFile() } })
+  apply(ctx, { host: '127.0.0.1', port: 0, pairing: { devicesFile: devicesFile(), persistSessions: false } })
   await waitStartup()
   const port = ctx.provided.remoteLinkGateway.port
 
@@ -176,7 +176,7 @@ test('disposers shut the gateway down', async () => {
   const upstream = await startUpstream()
   const ctx = fakeCtx()
   ctx.webServer = { port: upstream.port }
-  apply(ctx, { host: '127.0.0.1', port: 0, password: 'pw', pairing: { devicesFile: devicesFile() } })
+  apply(ctx, { host: '127.0.0.1', port: 0, password: 'pw', pairing: { devicesFile: devicesFile(), persistSessions: false } })
   await waitStartup()
   const port = ctx.provided.remoteLinkGateway.port
   try {

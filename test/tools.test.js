@@ -5,11 +5,11 @@ import { defineRemoteQrTool, defineRemoteDevicesTool } from '../src/tools.js'
 
 function serviceFixture(now = () => 1_000_000) {
   const store = { load: () => [], save() {} }
-  return createPairingService({ store, ttlMs: 300_000, now })
+  return createPairingService({ store, ttlMs: 300_000, now, persistSessions: false })
 }
 
 function qrTool(overrides = {}) {
-  const service = overrides.service ?? createPairingService({ store: { load: () => [], save() {} }, ttlMs: 300_000, now: () => 1_000_000 })
+  const service = overrides.service ?? createPairingService({ store: { load: () => [], save() {} }, ttlMs: 300_000, now: () => 1_000_000, persistSessions: false })
   return defineRemoteQrTool({
     createPairing: () => service.createPairing(),
     baseUrl: () => 'http://192.168.1.23:3081',

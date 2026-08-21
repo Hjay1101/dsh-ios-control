@@ -83,7 +83,9 @@ export function apply(ctx, config) {
       sessionMaxAgeMs: cfg.pairing.sessionMaxAgeDays * 86_400_000,
       deviceIdleExpiryMs: cfg.pairing.deviceIdleExpiryDays * 86_400_000,
       recoveryCode: cfg.pairing.recoveryCode,
+      persistSessions: cfg.pairing.persistSessions,
       ...(cfg.pairing.devicesFile === null ? {} : { devicesFile: cfg.pairing.devicesFile }),
+      ...(cfg.pairing.sessionsFile === null ? {} : { sessionsFile: cfg.pairing.sessionsFile }),
     })
     : null
 

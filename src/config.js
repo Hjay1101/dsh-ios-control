@@ -93,8 +93,12 @@ export function normalizeConfig(raw) {
     ? 30_000
     : intInRange(input.hostProbeIntervalMs, 'hostProbeIntervalMs', 0, 3_600_000)
 
-  const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null, recoveryCode: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
+  const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null, recoveryCode: null, persistSessions: true, sessionsFile: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
   if (typeof pairing.enabled !== 'boolean') throw new ConfigError('config.pairing.enabled must be a boolean')
+  if (typeof pairing.persistSessions !== 'boolean') throw new ConfigError('config.pairing.persistSessions must be a boolean')
+  if (pairing.sessionsFile !== null && typeof pairing.sessionsFile !== 'string') {
+    throw new ConfigError('config.pairing.sessionsFile must be a string path or null')
+  }
   if (pairing.devicesFile !== null && typeof pairing.devicesFile !== 'string') {
     throw new ConfigError('config.pairing.devicesFile must be a string path or null')
   }
