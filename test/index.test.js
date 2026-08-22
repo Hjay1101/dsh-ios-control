@@ -195,7 +195,15 @@ test('disposers shut the gateway down', async () => {
 })
 
 test('secure-context shim: v4-correct, placed in <head>, idempotent, tap registered', async () => {
-  const { withSecureContextShim } = await import('../src/index.js')
+  const { withSecureContextShim, withIosHomeScreenTags } = await import('../src/index.js')
+
+  // iOS home-screen icon tags: injected into <head>, idempotent, skipped when
+  // the upstream already declares its own apple-touch-icon.
+  const tagged = withIosHomeScreenTags('<head><title>x</title></head>')
+  assert.ok(tagged.startsWith('<head><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">'))
+  assert.equal(withIosHomeScreenTags(tagged), tagged)
+  const ownIcon = '<head><link rel="apple-touch-icon" href="/own.png"></head>'
+  assert.equal(withIosHomeScreenTags(ownIcon), ownIcon)
 
   // v4 correctness: evaluate the shim against a stubbed crypto (no randomUUID).
   const shimTag = withSecureContextShim('<head><title>x</title></head>')
@@ -209,13 +217,12 @@ test('secure-context shim: v4-correct, placed in <head>, idempotent, tap registe
   assert.equal(withSecureContextShim(shimTag), shimTag)
   assert.ok(withSecureContextShim('<html>no head</html>').startsWith('<script'))
 
-  // The plugin registers the transform on the injected webServer (fakeCtx's
+  // The plugin registers the transforms on the injected webServer (fakeCtx's
   // inject resolves scoped services from `this`, so webServer carries tapIndex).
   const taps = []
   const ctx2 = { ...fakeCtx(), webServer: { port: 1, tapIndex: (fn) => taps.push(fn) } }
   apply(ctx2, { host: '127.0.0.1' })
   await waitStartup()
-  assert.equal(taps.length, 1)
-  assert.equal(taps[0], withSecureContextShim)
+  assert.deepEqual(taps, [withSecureContextShim, withIosHomeScreenTags])
   for (const dispose of ctx2.disposers) dispose?.()
 })

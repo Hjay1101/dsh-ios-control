@@ -18,6 +18,7 @@
  */
 
 import { networkInterfaces, hostname } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { normalizeConfig } from './config.js'
 import { createAuthenticator } from './auth.js'
 import { createRateLimiter, createFailureBan } from './ratelimit.js'
@@ -50,6 +51,28 @@ export function withSecureContextShim(html) {
   if (typeof html !== 'string' || html.includes('rl-secure-context-shim')) return html
   const tag = `<script id="rl-secure-context-shim">${RANDOM_UUID_SHIM}</script>`
   return html.includes('<head>') ? html.replace('<head>', `<head>${tag}`) : `${tag}${html}`
+}
+
+/** Head tags so iOS "Add to Home Screen" shows a real app icon instead of a
+ *  blank tile: the upstream ships none (SVG favicon + webmanifest only — iOS
+ *  uses neither) and the gateway serves the PNG publicly for iOS's
+ *  cookie-less icon fetch. No-op when the upstream declares its own. */
+export function withIosHomeScreenTags(html) {
+  if (typeof html !== 'string' || html.includes('apple-touch-icon')) return html
+  const tags = '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">'
+  return html.includes('<head>') ? html.replace('<head>', `<head>${tags}`) : `${tags}${html}`
+}
+
+let homeScreenIconPng // undefined = not loaded yet; null = asset missing
+function loadHomeScreenIcon() {
+  if (homeScreenIconPng === undefined) {
+    try {
+      homeScreenIconPng = readFileSync(new URL('../assets/apple-touch-icon.png', import.meta.url))
+    } catch {
+      homeScreenIconPng = null
+    }
+  }
+  return homeScreenIconPng
 }
 
 /** First non-internal IPv4 address, or null when no LAN interface exists. */
@@ -160,6 +183,7 @@ export function apply(ctx, config) {
     pairingPage: PAIRING_PAGE_HTML,
     pairLimiter: createRateLimiter({ windowMs: 60_000, max: 10 }),
     cookieMaxAgeSeconds: cfg.pairing.sessionMaxAgeDays * 86_400,
+    homeScreenIcon: loadHomeScreenIcon,
     qrImage: pairingService === null
       ? null
       : () => {
@@ -267,6 +291,7 @@ export function apply(ctx, config) {
       // shim reaches the browser through whichever gateway fronts this host.
       try {
         webServer?.tapIndex?.(withSecureContextShim)
+        webServer?.tapIndex?.(withIosHomeScreenTags)
       } catch {
         // pre-tapIndex hosts: LAN plain-HTTP stays limited, HTTPS unaffected
       }

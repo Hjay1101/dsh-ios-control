@@ -70,6 +70,7 @@ export function createGateway({
   auth, limiter, failureBan, target, log = () => {},
   pairing = null, pairingPage = '', pairLimiter = null, cookieMaxAgeSeconds = 30 * 86_400,
   qrImage = null, qrPage = null,
+  homeScreenIcon = null,
   keepaliveIntervalMs = 25_000, pairingSnapshot = null,
   resolveDevice = null, tunnelHeartbeatFile = null,
   hostProbeIntervalMs = 30_000, notifySnapshot = null,
@@ -88,9 +89,24 @@ export function createGateway({
 
   /** Returns true when the request was a pairing endpoint and is fully handled. */
   function handlePairingRoute(req, res) {
-    if (pairing === null && req.url.split('?', 1)[0] !== '/status' && req.url.split('?', 1)[0] !== '/status.json') return false
     const path = req.url.split('?', 1)[0]
-    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/pair/recover' && path !== '/qr.png' && path !== '/qr' && path !== '/status' && path !== '/status.json') return false
+    const isStatus = path === '/status' || path === '/status.json'
+    if (pairing === null && !isStatus && path !== '/apple-touch-icon.png') return false
+    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/pair/recover' && path !== '/qr.png' && path !== '/qr' && path !== '/status' && path !== '/status.json' && path !== '/apple-touch-icon.png') return false
+
+    // iOS "Add to Home Screen" fetches the icon WITHOUT cookies from the
+    // phone's LAN — unlike /qr.png this must be public. Static brand asset,
+    // carries no secrets; a long shared cache is safe.
+    if (path === '/apple-touch-icon.png') {
+      const png = typeof homeScreenIcon === 'function' ? homeScreenIcon() : null
+      if (png === null) {
+        plainResponse(res, 404, {}, 'no icon')
+        return true
+      }
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=604800' })
+      res.end(png)
+      return true
+    }
 
     // Local-only observability surface: same fence as the QR image — loopback
     // source AND no proxy chain, so tunneled clients never see link telemetry.
