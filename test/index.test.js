@@ -195,7 +195,7 @@ test('disposers shut the gateway down', async () => {
 })
 
 test('secure-context shim: v4-correct, placed in <head>, idempotent, tap registered', async () => {
-  const { withSecureContextShim, withIosHomeScreenTags } = await import('../src/index.js')
+  const { withSecureContextShim, withIosHomeScreenTags, withMobileTweaks } = await import('../src/index.js')
 
   // iOS home-screen icon tags: injected into <head>, idempotent, skipped when
   // the upstream already declares its own apple-touch-icon.
@@ -204,6 +204,13 @@ test('secure-context shim: v4-correct, placed in <head>, idempotent, tap registe
   assert.equal(withIosHomeScreenTags(tagged), tagged)
   const ownIcon = '<head><link rel="apple-touch-icon" href="/own.png"></head>'
   assert.equal(withIosHomeScreenTags(ownIcon), ownIcon)
+
+  // 移动端补丁：注入到 </head> 前、幂等、资产缺失时静默。
+  const tweaked = withMobileTweaks('<head><title>x</title></head>')
+  assert.ok(tweaked.includes('data-dsh-ios="mobile"'))
+  assert.ok(tweaked.includes('@media (max-width: 520px)'))
+  assert.ok(tweaked.trimEnd().endsWith('</head>'))
+  assert.equal(withMobileTweaks(tweaked), tweaked)
 
   // v4 correctness: evaluate the shim against a stubbed crypto (no randomUUID).
   const shimTag = withSecureContextShim('<head><title>x</title></head>')
@@ -223,6 +230,6 @@ test('secure-context shim: v4-correct, placed in <head>, idempotent, tap registe
   const ctx2 = { ...fakeCtx(), webServer: { port: 1, tapIndex: (fn) => taps.push(fn) } }
   apply(ctx2, { host: '127.0.0.1' })
   await waitStartup()
-  assert.deepEqual(taps, [withSecureContextShim, withIosHomeScreenTags])
+  assert.deepEqual(taps, [withSecureContextShim, withIosHomeScreenTags, withMobileTweaks])
   for (const dispose of ctx2.disposers) dispose?.()
 })

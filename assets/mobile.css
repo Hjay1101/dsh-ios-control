@@ -1,0 +1,35 @@
+/* dsh-ios-control · 移动端可读性补丁
+   仅窄屏生效；选择器用语义片段匹配（兼容 CSS Modules 哈希变化）。
+   背景：官方前端与第三方插件弹窗均无小屏适配，设置类弹窗在手机上
+   被压进 ~342px 宽 + 半屏高的滚动区，行内标签与控件横向挤压换行。 */
+@media (max-width: 520px) {
+  /* 遮罩层内边距减半：用 :has 精确命中“包含对话框”的遮罩，不误伤其他元素 */
+  [class*="_root_"]:has([class*="popupDialog"]),
+  [class*="_root_"]:has([class*="_dialog_"]) {
+    padding: 14px;
+  }
+
+  /* 对话框本体吃满可用宽度 */
+  [class*="popupDialog"],
+  [class*="_dialog_"] {
+    max-width: 100%;
+  }
+
+  /* 内容区：放宽高度上限，行间呼吸感 */
+  [class*="popupRows"] {
+    max-height: min(68vh, 560px);
+    gap: 10px;
+  }
+
+  /* 行内改“两行制”：允许换行，标签不再与控件横向互挤 */
+  [class*="popupRow"],
+  [class*="popupRows"] > * {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  [class*="popupRow"] > *,
+  [class*="popupRows"] > * > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+}

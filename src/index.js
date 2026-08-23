@@ -63,6 +63,28 @@ export function withIosHomeScreenTags(html) {
   return html.includes('<head>') ? html.replace('<head>', `<head>${tags}`) : `${tags}${html}`
 }
 
+let mobileCssCache // undefined = 未加载；'' = 资产缺失
+function loadMobileCss() {
+  if (mobileCssCache === undefined) {
+    try {
+      mobileCssCache = readFileSync(new URL('../assets/mobile.css', import.meta.url), 'utf8')
+    } catch {
+      mobileCssCache = ''
+    }
+  }
+  return mobileCssCache
+}
+
+/** 移动端可读性补丁：官方前端与第三方插件弹窗（设置窗等）均无小屏适配，
+ *  注入一段仅窄屏生效的覆盖样式（assets/mobile.css）。桌面零影响；
+ *  样式置于 </head> 前以获得级联后手；资产缺失时静默跳过。 */
+export function withMobileTweaks(html) {
+  const css = loadMobileCss()
+  if (typeof html !== 'string' || html.includes('data-dsh-ios="mobile"') || css === '') return html
+  const tag = `<style data-dsh-ios="mobile">${css}</style>`
+  return html.includes('</head>') ? html.replace('</head>', `${tag}</head>`) : `${tag}${html}`
+}
+
 let homeScreenIconPng // undefined = not loaded yet; null = asset missing
 function loadHomeScreenIcon() {
   if (homeScreenIconPng === undefined) {
@@ -292,6 +314,7 @@ export function apply(ctx, config) {
       try {
         webServer?.tapIndex?.(withSecureContextShim)
         webServer?.tapIndex?.(withIosHomeScreenTags)
+        webServer?.tapIndex?.(withMobileTweaks)
       } catch {
         // pre-tapIndex hosts: LAN plain-HTTP stays limited, HTTPS unaffected
       }
