@@ -20,6 +20,7 @@ import { SESSION_COOKIE } from './auth.js'
 import { attachLinkKeepalive } from './ws-keepalive.js'
 import { createHostProbe } from './host-probe.js'
 import { STATUS_PAGE_HTML } from './status-page.js'
+import { LEGACY_PAGE_HTML, isLegacyUa } from './legacy-page.js'
 
 const REALM = 'dsh-remote-link'
 const LOOPBACK = /^(127\.0\.0\.1|::1|localhost)$/
@@ -276,6 +277,18 @@ export function createGateway({
       // must not pop a browser auth dialog.
       const challenge = auth.basicEnabled ? { 'www-authenticate': `Basic realm="${REALM}"` } : {}
       return plainResponse(res, 401, challenge, 'unauthorized')
+    }
+    // Paired but pre-ES2020 browser (e.g. iOS 12 Safari): the SPA would boot
+    // to a silent white screen. After auth — never leaking anything to
+    // strangers — explain instead of proxying a shell that cannot run.
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      req.url.split('?', 1)[0] === '/' &&
+      isLegacyUa(req.headers['user-agent'])
+    ) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(LEGACY_PAGE_HTML)
+      return
     }
     proxyRequest(req, res, target(), (error) => recordUpstreamError('proxy', error), {
       onResponded: () => { lastUpstreamOkAt = Date.now() },
