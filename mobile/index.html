@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="DSH">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-<title>DSH 任务</title>
+<title>DeepSeek Harness</title>
 <style>
   :root{
     --bg:#0b0d10; --card:#15181d; --line:#232830; --txt:#e8eaed; --dim:#8b929c;
@@ -34,7 +34,7 @@
     padding:calc(env(safe-area-inset-top) + 14px) 16px 10px;
     display:flex; align-items:baseline; justify-content:space-between; gap:8px;
   }
-  header h1{font-size:26px; font-weight:700; margin:0}
+  header h1{font-size:19px; font-weight:700; margin:0; white-space:nowrap}
   #host{font-size:11px; color:var(--dim); text-align:right; line-height:1.35; max-width:52%}
   #host .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--idle);margin-right:4px;vertical-align:1px}
   #host .dot.on{background:var(--run)}
@@ -123,6 +123,34 @@
     border:none; background:none; color:var(--accent); font-size:15px; padding:6px 10px 6px 0;
     cursor:pointer; font-weight:500;
   }
+  /* 详情副栏：左 turn 状态（Deep diving... 计时），右当前模型（点击切换） */
+  #subbar{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:7px 16px; border-bottom:1px solid var(--line); font-size:12px;
+  }
+  #turnstatus{color:var(--run); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  #turnstatus:empty::before{content:''}
+  #modelrow{
+    border:none; background:var(--card); color:var(--dim); font-size:12px;
+    border-radius:999px; padding:5px 11px; cursor:pointer; max-width:52%;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  /* 模型选择底部面板 */
+  #sheetmask{position:fixed; inset:0; z-index:40; background:rgba(0,0,0,.45)}
+  #modelsheet{
+    position:absolute; left:0; right:0; bottom:0;
+    background:var(--card); border-radius:16px 16px 0 0;
+    padding:14px 16px calc(env(safe-area-inset-bottom) + 18px);
+    max-height:70vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  }
+  #modelsheet h3{margin:4px 0 8px; font-size:13px; color:var(--dim); font-weight:600}
+  .mrow{
+    display:block; width:100%; text-align:left; margin:6px 0; padding:10px 12px;
+    border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--txt);
+    font-size:14px; cursor:pointer;
+  }
+  .mrow small{display:block; color:var(--dim); font-size:11px; margin-top:2px}
+  .mrow.cur{border-color:var(--accent)}
   #stream{flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
     padding:12px 16px 8px; touch-action:pan-y; overscroll-behavior:contain;
     -webkit-user-select:text; user-select:text}
@@ -185,7 +213,7 @@
 
 <!-- 主列表视图 -->
 <header>
-  <h1>任务</h1>
+  <h1>DeepSeek Harness</h1>
   <div id="host"><span class="dot"></span>连接中…</div>
 </header>
 <nav>
@@ -199,7 +227,11 @@
 
 <!-- 会话详情视图 -->
 <div id="detail">
-  <header><button id="back">‹ 任务</button><h1 id="dtitle"></h1></header>
+  <header><button id="back">‹ 列表</button><h1 id="dtitle"></h1></header>
+  <div id="subbar">
+    <span id="turnstatus"></span>
+    <button id="modelrow" type="button"></button>
+  </div>
   <div id="askcard" style="display:none"></div>
   <div id="stream"><div class="empty">加载中…</div><div id="live"></div></div>
   <div id="composer">
@@ -207,6 +239,9 @@
     <button id="send">↑</button>
   </div>
 </div>
+
+<!-- 模型选择底部面板 -->
+<div id="sheetmask" style="display:none"><div id="modelsheet"></div></div>
 
 <script>
 'use strict'
@@ -324,10 +359,11 @@ async function loadHostInfo() {
     const r = await rpc('host.describe', {})
     const el = $('#host')
     if (r.ok && r.value) {
-      el.innerHTML = '<span class="dot on"></span>' + esc(r.value.model ?? 'DSH') +
-        (r.value.version ? ' · v' + esc(String(r.value.version)) : '')
-    } else { el.innerHTML = '<span class="dot"></span>宿主离线' }
-  } catch { $('#host').innerHTML = '<span class="dot"></span>宿主离线' }
+      // 电脑在线：主人名取 home 路径尾段（host.describe 无 hostname 字段）
+      const owner = String(r.value.home ?? '').split('/').filter(Boolean).pop() ?? 'DSH'
+      el.innerHTML = '<span class="dot on"></span>' + esc(owner) + ' 的电脑 · 在线'
+    } else { el.innerHTML = '<span class="dot"></span>电脑离线' }
+  } catch { $('#host').innerHTML = '<span class="dot"></span>电脑离线' }
 }
 
 /* ---------- WebSocket downlinks ----------
@@ -596,14 +632,98 @@ async function openDetail(sid) {
   $('#detail').classList.add('open')
   $('#stream').innerHTML = '<div class="empty">加载中…</div><div id="live"></div>'
   clearLive()
+  clearTurn()
   $('#input').value = ''
   renderAskCard()
+  loadModels(sid)
   await loadHistory(false)
   $('#stream').scrollTop = $('#stream').scrollHeight
 }
 function closeDetail() {
   state.detail = null
+  clearTurn()
+  closeSheet()
   $('#detail').classList.remove('open')
+}
+
+/* ---------- turn 状态行（对齐桌面端 "Deep diving... 计时"） ----------
+ * 锚点 = 最后一个 turn/start 的 event.time；turn/end 清除。
+ * 与桌面一致：运行满 15s 才显示时长。 */
+state.turnStart = null
+function fmtDur(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const m = Math.floor(s / 60), h = Math.floor(m / 60)
+  if (h > 0) return h + '小时' + (m % 60) + '分'
+  if (m > 0) return m + '分' + (s % 60) + '秒'
+  return s + '秒'
+}
+function renderTurn() {
+  const el = $('#turnstatus')
+  if (state.detail === null || state.turnStart === null) { el.textContent = ''; return }
+  const elapsed = Date.now() - state.turnStart
+  el.textContent = elapsed >= 15_000 ? 'Deep diving... ' + fmtDur(elapsed) : 'Deep diving...'
+}
+function computeTurnFromEvents(events) {
+  // 尾部扫描：最后一条 turn/start 之后是否还有 turn/end
+  let start = null, open = false
+  for (const entry of events) {
+    const ev = entry.event ?? entry
+    if (ev.type === 'turn/start') { start = ev.time ?? null; open = true }
+    else if (ev.type === 'turn/end') { open = false }
+  }
+  state.turnStart = open ? start : null
+  renderTurn()
+}
+function clearTurn() { state.turnStart = null; renderTurn() }
+setInterval(() => { if (state.detail !== null && state.turnStart !== null) renderTurn() }, 1000)
+
+/* ---------- 模型查看与切换（session.models / session.selectModel） ---------- */
+state.models = null
+async function loadModels(sid) {
+  if (!sid) return
+  try {
+    const r = await rpc('session.models', { sessionId: sid })
+    if (!r.ok || state.detail !== sid) return
+    state.models = r.value
+    renderModelRow()
+  } catch { /* 模型目录失败不阻塞详情页 */ }
+}
+function renderModelRow() {
+  const el = $('#modelrow')
+  const cur = state.models?.current
+  el.textContent = cur ? (cur.provider + '/' + cur.model) : '模型'
+}
+async function selectModel(provider, model) {
+  const sid = state.detail
+  if (!sid) return
+  try {
+    const r = await rpc('session.selectModel', { sessionId: sid, provider, model })
+    if (!r.ok) { setBanner('切换失败：' + (r.error?.message ?? '?')); return }
+    state.models = { ...(state.models ?? {}), current: r.value.selected }
+    renderModelRow()
+    closeSheet()
+  } catch (err) { setBanner('切换失败（' + err.message + '）') }
+}
+function closeSheet() { $('#sheetmask').style.display = 'none'; $('#modelsheet').innerHTML = '' }
+function openSheet() {
+  const m = state.models
+  if (!m || !Array.isArray(m.groups)) return
+  const cur = m.current
+  let html = '<h3>选择模型</h3>'
+  for (const g of m.groups) {
+    html += '<h3>' + esc(g.name) + '</h3>'
+    for (const mod of g.models ?? []) {
+      const isCur = cur && cur.provider === g.id && cur.model === mod.id
+      html += '<button class="mrow' + (isCur ? ' cur' : '') + '" data-p="' + esc(g.id) + '" data-m="' + esc(mod.id) + '">' +
+        esc(mod.name) + (isCur ? ' ✓' : '') +
+        '<small>' + esc(mod.id) + '</small></button>'
+    }
+  }
+  $('#modelsheet').innerHTML = html
+  $('#sheetmask').style.display = 'block'
+  $('#modelsheet').querySelectorAll('.mrow').forEach((el) => {
+    el.addEventListener('click', () => selectModel(el.dataset.p, el.dataset.m))
+  })
 }
 
 async function loadHistory(older) {
@@ -631,6 +751,7 @@ async function loadHistory(older) {
       $('#stream').insertAdjacentHTML('beforeend', '<div id="live"></div>')
       renderLive(false)
     }
+    computeTurnFromEvents(events)
     renderMoreButton()
   } catch (err) {
     $('#stream').innerHTML = '<div class="empty">加载失败（' + esc(err.message) + '）</div>'
@@ -725,6 +846,9 @@ function onDetailEvent(frame) {
   }
   // 一条完整消息落库 → 直播区让位给正式渲染
   if (t === 'assistant/message') clearLive()
+  // turn 边界：驱动 "Deep diving..." 状态行
+  if (t === 'turn/start') { state.turnStart = event.time ?? Date.now(); renderTurn() }
+  else if (t === 'turn/end' && state.turnStart !== null) { clearTurn() }
   const html = eventToHtml(frame)
   if (!html) return
   const stream = $('#stream')
@@ -827,6 +951,8 @@ $('#plus').addEventListener('click', createSession)
 $('#back').addEventListener('click', closeDetail)
 $('#send').addEventListener('click', sendPrompt)
 $('#input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') sendPrompt() })
+$('#modelrow').addEventListener('click', openSheet)
+$('#sheetmask').addEventListener('click', (ev) => { if (ev.target.id === 'sheetmask') closeSheet() })
 
 // 思维链块点击展开/折叠（历史块与直播块通用）；直播块记住展开状态，
 // 避免下一条 delta 重绘时被折回去
