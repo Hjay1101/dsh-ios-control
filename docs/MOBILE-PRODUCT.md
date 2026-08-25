@@ -183,10 +183,12 @@ dsh-ios-control/
 
 ## 9. 里程碑
 
-- **M0（核心）**：`/m` 路由 + 任务列表（工作区分组 + 五态状态点 + 子 agent 平铺标记）
-  + 下拉刷新 + host 流增量 + **plan-review 标记显示**。
-- **M1（应急）**："需要我"页 + 审批/提问/计划评审一键回答 + notify 深链
-  + 会话详情（纯文本） + 发送消息。
+- **M0（✅ 已上线，真机验收通过）**：`/m` 路由 + 任务列表（工作区分组 + 五态状态点
+  + 子 agent 平铺标记）+ 下拉刷新 + host 流增量 + plan-review 标记显示。
+- **M1（应急，本轮交付）**："需要我"一键回答（审批行内两键 / 计划评审批准·拒绝 /
+  提问进详情页逐题作答）+ notify 深链 `/m?s=<sessionId>`（Bark url 参数、
+  ntfy click 字段）+ 会话详情（history 纯文本渲染：chunk/step/retry 全折叠，
+  实测占 98%+）+ 发送消息（`session.prompt mode:'queue'`）。
 - **M2（控制）**：停止（确认）、分叉、重命名、创建任务（挂工作区）。
 - **M3（打磨）**：搜索、归档、离线缓存（service worker）、桌面主屏图标、`/pair` 入口。
 
@@ -194,18 +196,27 @@ dsh-ios-control/
 
 1. **子 agent 层级**（已定案）：平铺 + ↳ 标记；不处理嵌套折叠。列表行仍需
    `workspace.list` 与 `session.list` 的合并去重（workspace 视图与会话列表的口径差异）。
-2. **`session/event` 渲染**：简化渲染需实测常见 event kind（user / assistant /
-   tool-call / plan / todo），确认折叠规则；`view` 槽是宿主计算的渲染意图，
-   优先消费它而非裸解析 event。
+2. **`session/event` 渲染**（✅ M1 已按实测实现）：实体事件仅四类——
+   `user/message`（气泡）、`assistant/message`（text 段 + tool-call 一行灰字，
+   reasoning 折叠）、`tool/call`/`tool/result`（view.title 或 🔧name 一行）；
+   其余类型全部跳过。
 3. **下行传输**（✅ 2026-08-25 定案）：SSE 变体实测不存在（GET 回 426），PWA 走
    WS 反代——隔离实例 rawUpgrade 实测 101 通过，mux open 首帧
    `session/subscribed` 确认重放机制真实存在。
 4. **心跳**（✅ 定案）：WS 腿由网关现有 keepalive ping 覆盖（手机腿同样受益）；
    PWA 侧仅保留指数退避重连 + onopen 全量 resync，无需自建心跳。
-5. **plan-review 协议**：M0 只消费标记；回答通道与 approval 同构
-   （`POST /api/respond`），M1 以实测为准实现（question 的回答 payload 结构
-   开工时以 questions domain 契约为准核验）。
+5. **plan-review 协议**（✅ M1 定案）：计划评审是 **question 帧的 intent**
+   （`intent.kind==='plan-review'`，`approve` 字段为批准选项标签，其余选项皆拒绝），
+   并非 approval 帧；回答走 question respond
+   `{sessionId, answer:{answers:[{id, selected:[label]}]}}`。question 的 rpcId
+   即其 stable logical id，`question/resolved` 以 `questionRpcId` 回执。
 6. **host.describe / /status 联动**：顶栏"电脑在线"复用现有宿主遥测结果，
    不新增探测。
+7. **event-tap 传输修正（M1 发现的既有 bug）**：tap 原按 SSE 实现，但上游对普通
+   GET 一律回 426——**离线推送此前从未真正连上宿主**（status.json 的
+   events.connected:false 吻合）。已改为 RFC 6455 WebSocket 客户端（最小帧解析：
+   ping→pong、分片感知、256KiB 上限）；fake upstream 测试同步改为真实 WS 行为。
+8. **真机验收清单**：M0 四项全过（分组标题/状态点翻转/"需要我"标记/自动刷新）。
+   M1 待验：审批两键、计划评审键、提问作答卡、详情流渲染、发送消息、推送深链跳转。
 7. **真机验收清单**（M0 收口标准）：工作区分组与真实标题、五态状态点翻转、
    "需要我"chip 对存量待审批的重建（依赖 mux 重放）、下拉刷新、弱网断连自动恢复。

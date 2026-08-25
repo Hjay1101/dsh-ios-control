@@ -159,7 +159,9 @@ export function apply(ctx, config) {
   // Offline interaction push: when an approval/question arrives and no
   // browser leg is connected to see it, ring the user's own channels
   // (Bark/ntfy/webhook). Payload carries no secrets; per-id dedupe plus a
-  // global cooldown keep it a doorbell, not a fire alarm.
+  // global cooldown keep it a doorbell, not a fire alarm. The deep link
+  // (/m?s=<sessionId>) opens the mobile task view directly — auth is the
+  // device's own pairing cookie, so the notification text alone is inert.
   const notifier = createNotifier({ ...cfg.notify, log })
   let lastPushAt = null
   let lastPushCooldownUntil = 0
@@ -169,7 +171,7 @@ export function apply(ctx, config) {
     ? createEventTap({
       target,
       log,
-      onRequested: ({ kind, id }) => {
+      onRequested: ({ kind, id, sessionId, summary }) => {
         if (gateway.activeLegCount() > 0) return // a connected browser sees it live
         const key = `${kind}:${id}`
         if (pushedIds.has(key)) return
@@ -178,9 +180,11 @@ export function apply(ctx, config) {
         pushedIds.add(key)
         lastPushAt = t
         lastPushCooldownUntil = t + PUSH_COOLDOWN_MS
+        const base = cfg.publicUrl ?? `http://${lanAddress()}:${gateway.port}`
         notifier.notify({
           title: kind === 'approval' ? 'DSH 等待审批' : 'DSH 等待回答',
-          body: `宿主机 agent 正在等你${kind === 'approval' ? '批准操作' : '回答问题'}——打开远程页面处理。`,
+          body: summary ? `等你${kind === 'approval' ? '批准' : '回答'}：${summary}` : `宿主机 agent 正在等你${kind === 'approval' ? '批准操作' : '回答问题'}。`,
+          url: `${base}/m${sessionId ? `?s=${encodeURIComponent(sessionId)}` : ''}`,
         }).catch(() => {})
       },
       onResolved: () => {

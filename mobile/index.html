@@ -1,7 +1,8 @@
 <!doctype html>
-<!-- dsh-ios-control · mobile PWA (M0): 任务遥控器首屏。
-     零依赖单文件；同源调 /api/*（网关反代 + cookie 认证）。
-     设计契约见 docs/MOBILE-PRODUCT.md（RPC 信封 / SSE 帧消费 / 五态状态点）。 -->
+<!-- dsh-ios-control · mobile PWA (M1): 任务遥控器。
+     M0：工作区分组任务列表 / 五态状态点 / WS 实时 / 下拉刷新
+     M1：会话详情（纯文本流）/ 发送消息 / “需要我”一键回答（审批·提问·计划评审）/ 深链
+     零依赖单文件；契约见 docs/MOBILE-PRODUCT.md（全部经隔离实例实测定案）。 -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -15,7 +16,7 @@
   :root{
     --bg:#0b0d10; --card:#15181d; --line:#232830; --txt:#e8eaed; --dim:#8b929c;
     --run:#34c759; --appr:#ff9f0a; --ques:#bf5af2; --plan:#64d2ff; --idle:#5a616b;
-    --accent:#0a84ff;
+    --accent:#0a84ff; --danger:#ff453a;
   }
   @media (prefers-color-scheme: light){
     :root{ --bg:#f2f2f7; --card:#fff; --line:#e3e3e8; --txt:#1c1c1e; --dim:#6e6e73;
@@ -61,6 +62,7 @@
     background:var(--card); border:1px solid var(--line); border-radius:12px;
     padding:12px 14px; margin:7px 0; min-height:52px;
   }
+  .row.tap{cursor:pointer}
   .row .st{flex:0 0 auto; width:11px; height:11px; border-radius:50%; background:var(--idle)}
   .row.running .st{background:var(--run)}
   .row.approval .st,.row.question .st,.row.plan-review .st{animation:pulse 1.6s ease-in-out infinite}
@@ -73,6 +75,20 @@
   .flag.approval{color:var(--appr); background:rgba(255,159,10,.15)}
   .flag.question{color:var(--ques); background:rgba(191,90,242,.15)}
   .flag.plan-review{color:var(--plan); background:rgba(100,210,255,.15)}
+  /* 待处理卡片（“需要我”过滤下的可操作行） */
+  .row.card{flex-wrap:wrap; gap:8px}
+  .row.card .meta{flex:1 1 100%}
+  .row.card .summary{display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+    font-size:13px; color:var(--txt); opacity:.85; margin-top:6px; white-space:normal; line-height:1.45}
+  .acts{display:flex; gap:8px; width:100%}
+  .btn{
+    flex:1; border:none; border-radius:9px; padding:11px 0; font-size:14px; font-weight:600;
+    background:var(--line); color:var(--txt); cursor:pointer;
+  }
+  .btn.primary{background:var(--accent); color:#fff}
+  .btn.danger{background:rgba(255,69,58,.16); color:var(--danger)}
+  .btn.ok{background:rgba(52,199,89,.18); color:var(--run)}
+  .btn:disabled{opacity:.45}
   .empty{text-align:center; color:var(--dim); font-size:14px; padding:48px 0}
   #pull{
     position:fixed; top:calc(env(safe-area-inset-top) + 6px); left:0; right:0;
@@ -80,10 +96,63 @@
     transform:translateY(-32px); transition:transform .18s; pointer-events:none;
   }
   #pull.armed{transform:translateY(0)}
+
+  /* ---------- 会话详情（推入式全屏） ---------- */
+  #detail{
+    position:fixed; inset:0; background:var(--bg); z-index:20;
+    display:none; flex-direction:column; padding-top:env(safe-area-inset-top);
+  }
+  #detail.open{display:flex}
+  #detail header{
+    padding:12px 16px 10px; border-bottom:1px solid var(--line);
+    align-items:center;
+  }
+  #detail header h1{font-size:17px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  #back{
+    border:none; background:none; color:var(--accent); font-size:15px; padding:6px 10px 6px 0;
+    cursor:pointer; font-weight:500;
+  }
+  #stream{flex:1; overflow-y:auto; padding:12px 16px 8px; -webkit-user-select:text; user-select:text}
+  .msg{margin:9px 0; font-size:14px; line-height:1.55}
+  .msg.user{
+    background:rgba(10,132,255,.22); border-radius:14px 14px 4px 14px;
+    padding:9px 12px; margin-left:44px; white-space:pre-wrap; word-break:break-word;
+  }
+  .msg.assistant{white-space:pre-wrap; word-break:break-word; color:var(--txt)}
+  .msg.tool{font-size:12px; color:var(--dim); padding-left:6px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  #more{display:block; margin:10px auto; border:none; background:var(--card); color:var(--accent);
+    border-radius:999px; padding:7px 16px; font-size:12px}
+  /* 待处理问题卡（详情页顶部） */
+  #askcard{
+    margin:10px 16px 0; padding:12px 14px; border-radius:12px;
+    background:rgba(191,90,242,.08); border:1px solid rgba(191,90,242,.35);
+    font-size:13px;
+  }
+  #askcard .q{font-weight:600; margin:8px 0 6px}
+  #askcard .opt{
+    display:block; width:100%; text-align:left; margin:5px 0; padding:9px 11px;
+    border-radius:9px; border:1px solid var(--line); background:var(--card); color:var(--txt);
+    font-size:13px; cursor:pointer;
+  }
+  /* 底部输入栏 */
+  #composer{
+    display:flex; gap:8px; padding:8px 12px calc(env(safe-area-inset-bottom) + 10px);
+    border-top:1px solid var(--line); background:var(--bg);
+  }
+  #input{
+    flex:1; border:1px solid var(--line); background:var(--card); color:var(--txt);
+    border-radius:18px; padding:10px 14px; font-size:15px; outline:none;
+    -webkit-user-select:text; user-select:text;
+  }
+  #send{border:none; background:var(--accent); color:#fff; border-radius:50%;
+    width:40px; height:40px; font-size:17px; cursor:pointer; flex:0 0 auto}
 </style>
 </head>
 <body>
 <div id="pull">↓ 松开刷新</div>
+
+<!-- 主列表视图 -->
 <header>
   <h1>任务</h1>
   <div id="host"><span class="dot"></span>连接中…</div>
@@ -95,6 +164,17 @@
 </nav>
 <div id="banner"></div>
 <main id="list"><div class="empty">加载中…</div></main>
+
+<!-- 会话详情视图 -->
+<div id="detail">
+  <header><button id="back">‹ 任务</button><h1 id="dtitle"></h1></header>
+  <div id="askcard" style="display:none"></div>
+  <div id="stream"><div class="empty">加载中…</div></div>
+  <div id="composer">
+    <input id="input" type="text" placeholder="发消息给这个任务…" autocomplete="off">
+    <button id="send">↑</button>
+  </div>
+</div>
 
 <script>
 'use strict'
@@ -115,8 +195,7 @@ const ago = (ts) => {
 }
 
 /* ---------- RPC ----------
- * 形状实测定案（docs/MOBILE-PRODUCT.md §5）：POST /api/<namespace.method>
- * 点号形式（斜杠形式 404）；信封与 server-response 解析同官方客户端。
+ * 点号形式 POST /api/<namespace.method>（斜杠形式实测 404）；信封同官方客户端。
  * 自带 uuid 实现（LAN 明文 HTTP 无 secure context）。 */
 async function rpc(method, payload) {
   const rpcId = uuid()
@@ -135,26 +214,46 @@ async function rpc(method, payload) {
   return full.result // {ok:true,value} | {ok:false,error}
 }
 
-/* ---------- state ---------- */
-const state = {
-  workspaces: [],            // WorkspaceView[]（API 顺序 = 展示顺序）
-  archived: new Set(),
-  sessions: new Map(),       // sessionId → summary
-  pending: new Map(),        // key `${kind}:${id}` → {sessionId, kind}
-  filter: 'all',
-  loadedOnce: false,
+/* 回答 answerable server-request 帧：POST /api/respond 回显 rpcId。
+ * approval value: {sessionId, approvalId, outcome:'allowed-once'|'rejected'}
+ * question value: {sessionId, answer:{answers:[{id, selected:[], custom?}]}} */
+async function respond(rpcId, value) {
+  let res
+  try {
+    res = await fetch('/api/respond', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-response', rpcId, result: { ok: true, value } }),
+    })
+  } catch { throw new Error('network') }
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  return res.json() // RpcReceipt {accepted, reason?}
 }
 
-const pendingOfSession = new Map() // 派生：sessionId → kind（render 前 rebuild）
+/* ---------- state ---------- */
+const state = {
+  workspaces: [],
+  archived: new Set(),
+  sessions: new Map(),       // sessionId → summary
+  pending: new Map(),        // key → {sessionId, kind, rpcId, frame}
+  filter: 'all',
+  loadedOnce: false,
+  detail: null,              // 打开的会话 id
+  dTitle: '',
+  dBaseSeq: null,
+  dHasMore: false,
+}
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return undefined } })()
 
-function rebuildPendingIndex() {
-  pendingOfSession.clear()
+function pendingBySession() {
+  const m = new Map()
   const rank = { approval: 0, 'plan-review': 1, question: 2 }
   for (const p of state.pending.values()) {
     if (!p.sessionId) continue
-    const prev = pendingOfSession.get(p.sessionId)
-    if (prev === undefined || rank[p.kind] < rank[prev]) pendingOfSession.set(p.sessionId, p.kind)
+    const prev = m.get(p.sessionId)
+    if (prev === undefined || rank[p.kind] < rank[prev]) m.set(p.sessionId, p.kind)
   }
+  return m
 }
 
 /* ---------- data refresh ---------- */
@@ -164,8 +263,8 @@ async function resync() {
   syncing = true
   try {
     const [ws, ss] = await Promise.all([rpc('workspace.list', {}), rpc('session.list', {})])
-    if (!ws.ok) throw new Error(ws.error?.code ?? 'workspace/list failed')
-    if (!ss.ok) throw new Error(ss.error?.code ?? 'session/list failed')
+    if (!ws.ok) throw new Error(ws.error?.code ?? 'workspace.list failed')
+    if (!ss.ok) throw new Error(ss.error?.code ?? 'session.list failed')
     state.workspaces = ws.value.items ?? []
     state.archived = new Set(ws.value.archivedSessionIds ?? [])
     state.sessions.clear()
@@ -195,10 +294,8 @@ async function loadHostInfo() {
 }
 
 /* ---------- WebSocket downlinks ----------
- * 实测定案：宿主无 SSE 变体（GET /api/events.* 回 426 upgrade required），
- * 下行必须走 WS（官方浏览器端同款）。网关反代 WS 并注入 keepalive ping，
- * 手机腿同样受益。断连语义：指数退避重连；host 流 onopen 全量 resync；
- * mux 流 onopen 清空 pending、由未决请求重放（stable rpcId）重建。 */
+ * 宿主无 SSE 变体（实测 426）；WS 反代 + 网关 keepalive ping 覆盖手机腿。
+ * host 流 onopen 全量 resync；mux 流 onopen 清空 pending、由重放重建。 */
 function connectWs(path, onOpen, onFrame) {
   let backoff = 1000, closed = false
   function connect() {
@@ -226,54 +323,69 @@ function openHostStream() {
         const s = state.sessions.get(f.sessionId)
         if (s) { s.running = Boolean(f.running); render() }
       } else if (String(f.type).startsWith('host/')) {
-        resync() // added/removed/workspace-*/archived-* 一律全量对齐（低频，简单可靠）
+        resync()
       }
     })
 }
 
 function openMuxStream() {
   connectWs('/api/events.mux',
-    () => {
-      // mux open 会重放所有未决 server-request（stable rpcId）：清空等重建
-      state.pending.clear(); rebuildPendingIndex(); render()
-    },
+    () => { state.pending.clear(); render(); syncPendingToDetail() },
     (raw) => {
       const f = raw?.payload ?? raw
       if (!f || typeof f.type !== 'string') return
-      if (f.type === 'approval/requested' || f.type === 'question/requested') {
-        const tool = String(f.toolName ?? '').toLowerCase()
-        const isPlan = tool.includes('plan') || String(f.kind ?? '') === 'plan'
-        const kind = f.type === 'approval/requested' ? (isPlan ? 'plan-review' : 'approval') : 'question'
-        const id = String(f.approvalId ?? f.questionRpcId ?? raw.rpcId ?? uuid())
-        state.pending.set(`${kind === 'approval' ? 'a' : 'q'}:${id}`,
-          { sessionId: f.sessionId ?? raw.sessionId ?? null, kind })
-        rebuildPendingIndex(); render()
-      } else if (f.type === 'approval/resolved' || f.type === 'question/resolved') {
-        const id = String(f.approvalId ?? f.questionRpcId ?? '')
-        state.pending.delete('a:' + id); state.pending.delete('q:' + id)
-        rebuildPendingIndex(); render()
+      // 帧形状（权威 schema）：approval/requested {sessionId,approvalId,toolName,reason?}；
+      // question/requested {sessionId, questions:[{id,question,options?,intent?}]}；
+      // plan-review = question 的 intent.kind==='plan-review'（非 approval 帧）。
+      if (f.type === 'approval/requested') {
+        state.pending.set('a:' + f.approvalId, {
+          sessionId: f.sessionId, kind: 'approval', rpcId: raw.rpcId, frame: f,
+        })
+        render()
+      } else if (f.type === 'question/requested') {
+        const isPlan = (f.questions ?? []).some((q) => q.intent?.kind === 'plan-review')
+        state.pending.set('q:' + raw.rpcId, {
+          sessionId: f.sessionId, kind: isPlan ? 'plan-review' : 'question',
+          rpcId: raw.rpcId, frame: f,
+        })
+        render()
+      } else if (f.type === 'approval/resolved') {
+        state.pending.delete('a:' + f.approvalId)
+        render()
+      } else if (f.type === 'question/resolved') {
+        state.pending.delete('q:' + f.questionRpcId)
+        render()
+      } else if (f.type === 'session/title') {
+        const s = state.sessions.get(f.sessionId)
+        if (s && f.title) {
+          s.projections = s.projections ?? {}
+          s.projections.values = s.projections.values ?? {}
+          s.projections.values.title = f.title
+          if (state.detail === f.sessionId) $('#dtitle').textContent = f.title
+          render()
+        }
+      } else if (f.type === 'session/event') {
+        onDetailEvent(f)
       }
-      // session/title、session/event 等 M1 消费；M0 忽略其余帧
     })
 }
 
-/* ---------- derive & render ---------- */
-function rowKind(s) {
-  const p = pendingOfSession.get(s.sessionId)
+/* ---------- derive & render（主列表） ---------- */
+function rowKindOf(s, pendMap) {
+  const p = pendMap.get(s.sessionId)
   if (p) return p
   return s.running ? 'running' : 'idle'
 }
-function isVisible(s) {
-  // 空白会话（从未发过消息）且不运行、无待处理 → 隐藏（与官方列表一致）
-  if (s.blank && !s.running && !pendingOfSession.has(s.sessionId)) return false
+function isVisible(s, pendMap) {
+  if (s.blank && !s.running && !pendMap.has(s.sessionId)) return false
   if (state.archived.has(s.sessionId)) return false
   return true
 }
 
 function render() {
-  rebuildPendingIndex()
   const list = $('#list')
   if (!state.loadedOnce) { list.innerHTML = '<div class="empty">加载中…</div>'; updateChips(); return }
+  const pendMap = pendingBySession()
 
   const owned = new Set()
   for (const w of state.workspaces) for (const id of w.sessionIds ?? []) owned.add(id)
@@ -283,25 +395,25 @@ function render() {
     const rows = []
     for (const id of w.sessionIds ?? []) {
       const s = state.sessions.get(id)
-      if (!s || !isVisible(s)) continue
+      if (!s || !isVisible(s, pendMap)) continue
       rows.push(s)
     }
     groups.push({ title: w.title || w.path, rows })
   }
-  const loose = [...state.sessions.values()].filter((s) => !owned.has(s.sessionId) && isVisible(s))
+  const loose = [...state.sessions.values()].filter((s) => !owned.has(s.sessionId) && isVisible(s, pendMap))
   if (loose.length > 0) groups.push({ title: '其他', rows: loose })
 
   const order = { approval: 0, 'plan-review': 1, question: 2, running: 3, idle: 4 }
   for (const g of groups) {
     g.rows.sort((a, b) =>
-      (order[rowKind(a)] - order[rowKind(b)]) || ((b.updatedAt ?? 0) - (a.updatedAt ?? 0)))
+      (order[rowKindOf(a, pendMap)] - order[rowKindOf(b, pendMap)]) || ((b.updatedAt ?? 0) - (a.updatedAt ?? 0)))
   }
 
   let shown = 0, runCount = 0, attCount = 0
   const html = []
   for (const g of groups) {
     const filtered = g.rows.filter((s) => {
-      const k = rowKind(s)
+      const k = rowKindOf(s, pendMap)
       if (k === 'running') runCount++
       if (k !== 'running' && k !== 'idle') attCount++
       if (state.filter === 'running') return k === 'running'
@@ -309,22 +421,25 @@ function render() {
       return true
     })
     if (filtered.length === 0) continue
-    const gRun = filtered.filter((s) => rowKind(s) === 'running').length
-    const gAtt = filtered.filter((s) => { const k = rowKind(s); return k !== 'running' && k !== 'idle' }).length
+    const gRun = filtered.filter((s) => rowKindOf(s, pendMap) === 'running').length
+    const gAtt = filtered.filter((s) => { const k = rowKindOf(s, pendMap); return k !== 'running' && k !== 'idle' }).length
     html.push('<div class="group"><span>' + esc(g.title) + '</span><span class="g-badges">' +
       (gRun ? '<span style="color:var(--run)">运行 ' + gRun + '</span>' : '') +
       (gAtt ? '<span style="color:var(--appr)">待处理 ' + gAtt + '</span>' : '') + '</span></div>')
     for (const s of filtered) {
-      const k = rowKind(s)
+      const k = rowKindOf(s, pendMap)
       shown++
       const label = { approval: '待审批', question: '提问', 'plan-review': '计划评审' }[k]
-      const sub = [s.parentSessionId ? '↳ 子任务' : null,
-        ago(s.updatedAt ?? Date.now())].filter(Boolean).join(' · ')
-      html.push('<div class="row ' + k + '">' +
+      const sub = [s.parentSessionId ? '↳ 子任务' : null, ago(s.updatedAt ?? Date.now())].filter(Boolean).join(' · ')
+      const card = k !== 'running' && k !== 'idle'
+      html.push('<div class="row tap ' + k + (card ? ' card' : '') + '" data-sid="' + esc(s.sessionId) + '">' +
         '<span class="st"></span>' +
         '<span class="meta"><span class="title">' + esc(displayTitle(s)) + '</span>' +
-        '<span class="sub">' + esc(sub) + '</span></span>' +
+        '<span class="sub">' + esc(sub) + '</span>' +
+        (card ? '<span class="summary">' + esc(pendingSummary(s.sessionId, k)) + '</span>' : '') +
+        '</span>' +
         (label ? '<span class="flag ' + k + '">' + label + '</span>' : '') +
+        (card ? actionsHtml(s.sessionId, k) : '') +
         '</div>')
     }
   }
@@ -334,8 +449,45 @@ function render() {
   updateChips(runCount, attCount)
 }
 
+function pendingSummary(sessionId, kind) {
+  for (const p of state.pending.values()) {
+    if (p.sessionId !== sessionId || p.kind !== kind) continue
+    if (p.frame?.type === 'approval/requested') {
+      return p.frame.reason || ('请求使用工具：' + (p.frame.toolName ?? '未知'))
+    }
+    if (p.frame?.type === 'question/requested') {
+      return (p.frame.questions ?? []).map((q) => q.question).join(' / ')
+    }
+  }
+  return ''
+}
+// plan-review 批准/拒绝选项名（intent.approve 为批准标签，其余选项皆拒绝）
+function planOptions(p) {
+  const q0 = (p.frame.questions ?? [])[0] ?? {}
+  const approveLabel = q0.intent?.approve
+  const declineLabel = (q0.options ?? []).map((o) => o.label).find((l) => l !== approveLabel)
+  return { q0, approveLabel, declineLabel }
+}
+function actionsHtml(sessionId, kind) {
+  for (const [key, p] of state.pending.entries()) {
+    if (p.sessionId !== sessionId || p.kind !== kind) continue
+    if (kind === 'approval') {
+      return '<div class="acts" data-key="' + esc(key) + '">' +
+        '<button class="btn ok" data-act="allow">允许一次</button>' +
+        '<button class="btn danger" data-act="reject">拒绝</button></div>'
+    }
+    if (kind === 'plan-review') {
+      const { declineLabel } = planOptions(p)
+      return '<div class="acts" data-key="' + esc(key) + '">' +
+        '<button class="btn primary" data-act="approve-plan">批准计划</button>' +
+        '<button class="btn danger" data-act="decline-plan"' + (declineLabel ? '' : ' disabled') + '>拒绝</button></div>'
+    }
+    return '' // 普通 question：点击行进详情页作答
+  }
+  return ''
+}
+
 function displayTitle(s) {
-  // 实测：title 在 projections.values.title（session.list 顶层无 title 字段）
   const t = s.projections?.values?.title ?? s.title
   if (t) return t
   if (s.cwd) return String(s.cwd).split('/').filter(Boolean).pop() || '未命名任务'
@@ -344,14 +496,15 @@ function displayTitle(s) {
 function updateChips(runCount, attCount) {
   document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c.dataset.f === state.filter))
   document.querySelector('.chip[data-f=all] b').textContent = ''
-  document.querySelector('.chip[data-f=running] b').textContent = runCount || countBy('running') || ''
-  document.querySelector('.chip[data-f=attention] b').textContent = attCount || countBy('attention') || ''
+  document.querySelector('.chip[data-f=running] b').textContent = runCount ?? countBy('running')
+  document.querySelector('.chip[data-f=attention] b').textContent = attCount ?? countBy('attention')
 }
 function countBy(kind) {
+  const pendMap = pendingBySession()
   let n = 0
   for (const s of state.sessions.values()) {
-    if (!isVisible(s)) continue
-    const k = rowKind(s)
+    if (!isVisible(s, pendMap)) continue
+    const k = rowKindOf(s, pendMap)
     if (kind === 'running' && k === 'running') n++
     if (kind === 'attention' && k !== 'running' && k !== 'idle') n++
   }
@@ -368,12 +521,200 @@ function setBanner(text) {
   b.classList.toggle('show', text !== '')
 }
 
+/* ---------- 一键回答 ---------- */
+async function answer(key, action) {
+  const p = state.pending.get(key)
+  if (!p) return
+  const sid = p.frame.sessionId
+  try {
+    if (action === 'allow' || action === 'reject') {
+      await respond(p.rpcId, { sessionId: sid, approvalId: p.frame.approvalId,
+        outcome: action === 'allow' ? 'allowed-once' : 'rejected' })
+    } else if (action === 'approve-plan' || action === 'decline-plan') {
+      const { q0, approveLabel, declineLabel } = planOptions(p)
+      const label = action === 'approve-plan' ? approveLabel : declineLabel
+      if (!label) return
+      await respond(p.rpcId, { sessionId: sid,
+        answer: { answers: [{ id: q0.id, selected: [label] }] } })
+    }
+    state.pending.delete(key)
+    render()
+  } catch (err) {
+    setBanner('回答失败（' + err.message + '）——可能已过时，下拉刷新')
+  }
+}
+
+/* ---------- 会话详情 ---------- */
+async function openDetail(sid) {
+  state.detail = sid
+  const s = state.sessions.get(sid)
+  state.dTitle = s ? displayTitle(s) : '会话'
+  state.dBaseSeq = null
+  state.dHasMore = false
+  $('#dtitle').textContent = state.dTitle
+  $('#detail').classList.add('open')
+  $('#stream').innerHTML = '<div class="empty">加载中…</div>'
+  $('#input').value = ''
+  renderAskCard()
+  await loadHistory(false)
+  $('#stream').scrollTop = $('#stream').scrollHeight
+}
+function closeDetail() {
+  state.detail = null
+  $('#detail').classList.remove('open')
+}
+
+async function loadHistory(older) {
+  const sid = state.detail
+  if (!sid) return
+  try {
+    const payload = older
+      ? { sessionId: sid, maxMessages: 50, beforeSeq: state.dBaseSeq }
+      : { sessionId: sid, maxMessages: 50 }
+    const r = await rpc('session.history', payload)
+    if (!sid || state.detail !== sid) return
+    if (!r.ok) { $('#stream').innerHTML = '<div class="empty">加载失败：' + esc(r.error?.message ?? '?') + '</div>'; return }
+    const { events, hasMore } = r.value
+    state.dHasMore = Boolean(hasMore)
+    if (events.length > 0) state.dBaseSeq = events[0].event.seq
+    const html = events.map(eventToHtml).filter(Boolean)
+    if (older) {
+      const anchor = $('#stream').firstElementChild
+      $('#stream').insertAdjacentHTML('afterbegin', html.join(''))
+      anchor?.scrollIntoView()
+    } else {
+      $('#stream').innerHTML = html.length > 0 ? html.join('') : '<div class="empty">还没有消息</div>'
+    }
+    renderMoreButton()
+  } catch (err) {
+    $('#stream').innerHTML = '<div class="empty">加载失败（' + esc(err.message) + '）</div>'
+  }
+}
+function renderMoreButton() {
+  $('#more')?.remove()
+  if (state.dHasMore) {
+    $('#stream').insertAdjacentHTML('afterbegin', '<button id="more">加载更早的消息</button>')
+    $('#more').addEventListener('click', () => loadHistory(true))
+  }
+}
+
+/* 人话视图：chunk/step/retry/compaction 等中间态一律折叠（实测占 98%+） */
+function eventToHtml(entry) {
+  const event = entry.event ?? entry
+  const view = entry.view
+  const t = event.type
+  const d = event.data ?? {}
+  if (t === 'user/message') {
+    const text = (d.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('\n')
+    return text ? '<div class="msg user">' + esc(text) + '</div>' : null
+  }
+  if (t === 'assistant/message') {
+    const parts = []
+    for (const b of d.message?.content ?? []) {
+      if (b.type === 'text' && b.text) parts.push(esc(b.text))
+      else if (b.type === 'tool-call' && b.name) parts.push(toolLine(b.name, null))
+    }
+    return parts.length > 0 ? '<div class="msg assistant">' + parts.join('\n') + '</div>' : null
+  }
+  if (t === 'tool/call') {
+    const title = view?.for === 'call' ? view.view.title : null
+    return toolLine(d.name ?? '工具', title)
+  }
+  if (t === 'tool/result') {
+    const title = view?.for === 'result' ? (view.view.title ?? '完成') : '完成'
+    return toolLine(null, title)
+  }
+  return null
+}
+function toolLine(name, title) {
+  return '<div class="msg tool">' + esc(title ?? ('🔧 ' + (name ?? ''))) + '</div>'
+}
+function onDetailEvent(frame) {
+  if (!frame || frame.sessionId !== state.detail) return
+  const html = eventToHtml(frame)
+  if (!html) return
+  const stream = $('#stream')
+  const atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80
+  stream.insertAdjacentHTML('beforeend', html)
+  if (atBottom) stream.scrollTop = stream.scrollHeight
+}
+
+async function sendPrompt() {
+  const input = $('#input')
+  const text = input.value.trim()
+  if (!text || !state.detail) return
+  input.value = ''
+  const sid = state.detail
+  try {
+    const r = await rpc('session.prompt', {
+      sessionId: sid, mode: 'queue',
+      content: [{ type: 'text', text }],
+      ...(TZ ? { clientTimeZone: TZ } : {}),
+    })
+    if (!r.ok) { setBanner('发送失败：' + (r.error?.message ?? '?')); input.value = text }
+  } catch (err) { setBanner('发送失败（' + err.message + '）'); input.value = text }
+}
+
+/* 详情页内的待处理问题卡（普通 question 在此逐题作答） */
+function syncPendingToDetail() {
+  if (state.detail) renderAskCard()
+}
+function renderAskCard() {
+  const card = $('#askcard')
+  if (!state.detail) { card.style.display = 'none'; return }
+  const qs = [...state.pending.entries()].filter(([, p]) => p.sessionId === state.detail && p.kind === 'question')
+  if (qs.length === 0) { card.style.display = 'none'; card.innerHTML = ''; return }
+  card.style.display = 'block'
+  let html = '<b style="color:var(--ques)">等待你的回答</b>'
+  for (const [key, p] of qs) {
+    ;(p.frame.questions ?? []).forEach((q, qi) => {
+      html += '<div class="q">' + esc(q.header ? q.header + ' · ' : '') + esc(q.question) + '</div>'
+      for (const o of q.options ?? []) {
+        html += '<button class="opt" data-key="' + esc(key) + '" data-q="' + qi + '" data-label="' + esc(o.label) + '">' +
+          esc(o.label) + (o.description ? '<br><small style="color:var(--dim)">' + esc(o.description) + '</small>' : '') + '</button>'
+      }
+    })
+  }
+  card.innerHTML = html
+  card.querySelectorAll('.opt').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const key = el.dataset.key
+      const p = state.pending.get(key)
+      if (!p) return
+      const q = (p.frame.questions ?? [])[Number(el.dataset.q)]
+      if (!q) return
+      try {
+        await respond(p.rpcId, { sessionId: p.frame.sessionId,
+          answer: { answers: [{ id: q.id, selected: [el.dataset.label] }] } })
+        state.pending.delete(key)
+        renderAskCard()
+        render()
+      } catch (err) { setBanner('回答失败（' + err.message + '）') }
+    })
+  })
+}
+
 /* ---------- interactions ---------- */
 document.querySelectorAll('.chip').forEach((c) => {
   c.addEventListener('click', () => { state.filter = c.dataset.f; render() })
 })
 
-// 下拉刷新（顶部下拉 ≥28px 松手触发）
+// 列表点击代理：操作按钮 → 一键回答；行 → 详情
+$('#list').addEventListener('click', (ev) => {
+  const actBtn = ev.target.closest('.btn[data-act]')
+  if (actBtn) {
+    actBtn.disabled = true
+    answer(actBtn.closest('.acts').dataset.key, actBtn.dataset.act)
+    return
+  }
+  const row = ev.target.closest('.row[data-sid]')
+  if (row) openDetail(row.dataset.sid)
+})
+$('#back').addEventListener('click', closeDetail)
+$('#send').addEventListener('click', sendPrompt)
+$('#input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') sendPrompt() })
+
+// 下拉刷新
 let touchStartY = 0, pulling = false
 const pull = $('#pull')
 document.addEventListener('touchstart', (ev) => {
@@ -381,23 +722,28 @@ document.addEventListener('touchstart', (ev) => {
 }, { passive: true })
 document.addEventListener('touchmove', (ev) => {
   if (!pulling) return
-  const dy = ev.touches[0].clientY - touchStartY
-  pull.classList.toggle('armed', dy > 28)
+  pull.classList.toggle('armed', ev.touches[0].clientY - touchStartY > 28)
 }, { passive: true })
 document.addEventListener('touchend', () => {
   if (pulling && pull.classList.contains('armed')) resync()
   pulling = false; pull.classList.remove('armed')
 })
 
-// 回前台立即对齐（EventSource 重连可能滞后）
+// 回前台立即对齐
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { resync(); loadHostInfo() }
+  if (document.visibilityState === 'visible') {
+    resync(); loadHostInfo()
+    if (state.detail) loadHistory(false)
+  }
 })
 
 /* ---------- boot ---------- */
 resync().then(loadHostInfo)
 openHostStream()
 openMuxStream()
+// notify 深链：/m?s=<sessionId> 直达会话
+const deepSid = new URLSearchParams(location.search).get('s')
+if (deepSid) openDetail(deepSid)
 </script>
 </body>
 </html>

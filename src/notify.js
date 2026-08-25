@@ -4,7 +4,9 @@
  * browser leg is connected to see it.
  *
  * Policy boundary: notifications carry only "something needs you" plus a
- * non-secret summary — never URLs, pairing secrets, or recovery codes.
+ * non-secret summary and — since M1 — a deep link to the mobile task view
+ * (`/m?s=<sessionId>`). The link carries no secrets: authentication is the
+ * device's own pairing cookie, so a stolen notification text is inert.
  * Channel credentials (Bark key / ntfy topic) live in the user's config and
  * are sent only to those services. All channels are tried in parallel; a
  * failing channel logs and never breaks the others.
@@ -14,24 +16,27 @@ export function createNotifier({ barkUrl = '', ntfyUrl = '', webhookUrl = '', fe
   // A hung push endpoint must not pin sockets/promises forever.
   const signal = () => AbortSignal.timeout(fetchTimeoutMs)
   const channels = []
-  if (barkUrl !== '') channels.push(['bark', async ({ title, body }) => {
-    await fetchImpl(`${barkUrl.replace(/\/$/, '')}/${encodeURIComponent(title)}/${encodeURIComponent(body)}`, { signal: signal() })
+  if (barkUrl !== '') channels.push(['bark', async ({ title, body, url }) => {
+    const target = `${barkUrl.replace(/\/$/, '')}/${encodeURIComponent(title)}/${encodeURIComponent(body)}` +
+      (url ? `?url=${encodeURIComponent(url)}` : '')
+    await fetchImpl(target, { signal: signal() })
   }])
-  if (ntfyUrl !== '') channels.push(['ntfy', async ({ title, body }) => {
+  if (ntfyUrl !== '') channels.push(['ntfy', async ({ title, body, url }) => {
     // HTTP header values must be Latin-1 and our titles are CJK, so a
     // `title` header makes fetch throw ("Cannot convert argument to a
     // ByteString") on every push. Use the documented JSON publishing route
     // instead: POST {topic, title, message} to the service root derived from
     // the configured topic URL (supports self-hosted subpath deployments and
-    // keeps any query params such as access tokens).
-    const url = new URL(ntfyUrl)
-    const segments = url.pathname.split('/').filter(Boolean)
+    // keeps any query params such as access tokens). `click` deep-links the
+    // notification tap.
+    const target = new URL(ntfyUrl)
+    const segments = target.pathname.split('/').filter(Boolean)
     const topic = segments.pop() ?? ''
-    url.pathname = segments.length === 0 ? '/' : `/${segments.join('/')}/`
-    await fetchImpl(url, {
+    target.pathname = segments.length === 0 ? '/' : `/${segments.join('/')}/`
+    await fetchImpl(target, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ topic, title, message: body }),
+      body: JSON.stringify({ topic, title, message: body, ...(url ? { click: url } : {}) }),
       signal: signal(),
     })
   }])
