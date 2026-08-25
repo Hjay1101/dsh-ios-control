@@ -306,7 +306,7 @@ export function createGateway({
           res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store',
-            'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'",
+            'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'",
           })
           res.end(req.method === 'HEAD' ? undefined : html)
           return

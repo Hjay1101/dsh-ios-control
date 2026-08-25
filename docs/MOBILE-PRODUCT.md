@@ -37,21 +37,29 @@
 明确不做：设置、插件管理、成本面板、模型选择、附件图片、主题、多语言、
 完整 markdown 渲染、消息编辑、桌面 UI 的任何入口。
 
-## 2. 关键事实：整个产品不需要 WebSocket
+## 2. 关键事实：传输契约（2026-08-25 隔离实例实测定案）
 
-调研结论（宿主侧契约 + 官方客户端实现双重确认）：
+> 实测方法：`dsh web --patch` 起隔离实例（独立网关端口 + Basic 认证），curl/node
+> 原始 WS 客户端逐项验证；不碰现网 3081。结论已回填本节与 §5/§10。
 
-- **RPC**：普通 `POST /api/<endpoint>`，body 为 `{type:'client-request', rpcId, method, payload}`
-  信封；响应 `{type:'server-response', rpcId, result: {ok, value|error}}`。
-- **事件下行**：`/api/events.host` 与 `/api/events.mux` 均有 SSE 变体（网关 event-tap
-  已在 Node 端使用）；官方浏览器端走 WebSocket——**PWA 用哪种下行是 M0 待验证点**
-  （见 §10.3，候选：复用网关 WS 反代 / 使用 SSE 变体）。
+- **RPC**：普通 `POST /api/<namespace.method>`（**点号形式，如 `/api/session.list`**
+  ——斜杠形式 `/api/session/list` 实测 404 "not found"）。body 为
+  `{type:'client-request', rpcId, method, payload}` 信封；响应
+  `{type:'server-response', rpcId, result: {ok, value|error}}`。
+  ⚠️ 宿主 HTTP 层就绪晚于端口监听数秒：过早请求会得到 "not found"（就绪竞态，
+  非形状错误）。
+- **事件下行：只有 WebSocket 一条路**。GET `/api/events.host|mux` 无 upgrade 头时
+  实测回 `426 upgrade required`（SSE 变体在当前宿主不可达——此前"Node 端 SSE"
+  的判断已过时）。浏览器端 WS 自动携带配对 cookie，经网关 `proxyUpgrade` 反代；
+  网关注入的 keepalive ping 对手机腿同样生效（SSE 方案没有的福利）。
+- **WS 帧信封（实测首帧）**：`{type:'server-request', rpcId, method, payload:{type:'session/subscribed', sessionId, lastSeq}}`
+  ——外层信封 + 内层帧；mux open 后宿主主动推订阅基线并重放未决请求（stable
+  rpcId），PWA 打开即可重建存量待审批集合。
 - **审批回答**：既非 RPC 也非 WS——对 mux 帧的响应，走 `POST /api/respond` 普通 HTTP，
   回显 server-request 的 rpcId + `{sessionId, approvalId, outcome}`，HTTP 响应体即收据。
 
-因此 PWA 的指令面（fetch）与响应面（respond）全部是普通 HTTP；唯一需要选型的
-是下行事件传输。网关现有的 keepalive、限速、认证、配对原样复用，不新增任何
-传输层代码。
+因此 PWA = fetch（指令）+ WebSocket（下行）+ fetch respond（审批）；认证、限速、
+keepalive 全部复用网关现有层，无新增传输代码。
 
 ## 3. 信息架构：三视图
 
@@ -114,12 +122,12 @@
 `approval/requested` / `question/requested` 为 server-request（稳定 rpcId）；回答 =
 `POST /api/respond` 回显 rpcId（body 为 client-response 信封）。
 
-## 5. API 契约（已核实，开工即照抄）
+## 5. API 契约（2026-08-25 实测定案，开工即照抄）
 
-| 操作 | 端点 | 关键字段 |
+| 操作 | 端点（点号形式） | 关键字段 |
 |---|---|---|
-| 列会话 | `session.list` `{}` | `items[]`：`sessionId,title,updatedAt,running,blank,parentSessionId,cwd,agentPreset` |
-| 列工作区 | `workspace.list` | `WorkspaceView[]`（会话归属/顺序、`archivedSessionIds`） |
+| 列会话 | `session.list` `{}` | `items[]`：`sessionId,updatedAt,running,blank,parentSessionId?,cwd,agentPreset,projections.values.*`；**title 在 `projections.values.title`**（顶层无 title）；values 另含 `todos/tokenUsage/contextPressure/sessionListMetadata/plan` 可供 M1+ 消费 |
+| 列工作区 | `workspace.list` | `{items:[{workspaceId,path,title,sessionIds[],createdAt,updatedAt}], archivedSessionIds?}`（实测与类型一致） |
 | 历史 | `session.history` `{sessionId, maxMessages, beforeSeq?}` | `{events:[{event,view?}], hasMore, projections}`，初始 `maxMessages:50` |
 | 发消息 | `session.prompt` `{sessionId, mode:'queue'\|'steer', content:[{type:'text',text}], clientTimeZone?}` | `queue` 排队，`steer` 打断（手机端隐藏） |
 | 停止 | `session.cancel` `{sessionId}` | |
@@ -129,26 +137,29 @@
 | 搜索 | `session.search` `{query}` | `{items:[{sessionId,snippet}], hasMore}`（v1+） |
 | 归档 | `workspace.archiveSession` `{sessionId}` | 极简版"删除任务"（会话日志保留） |
 | 审批回答 | `POST /api/respond` | `{type:'client-response', rpcId, result:{ok:true, value:{sessionId, approvalId, outcome:'allowed-once'\|'rejected'}}}`；响应体即收据 |
-| 宿主状态 | `host.describe` | `{version, model, attachedSessions}`（顶栏"电脑在线"锚点） |
+| 宿主状态 | `host.describe` | 实测返回 `{version,cwd,provider,model,attachedSessions,home,canOpenPath}`（顶栏锚点） |
 
-注意：**会话归属工作区的信息在 `workspace.list` 的 WorkspaceView 里**（`session.list`
-的 summary 无 workspaceId 字段）——分组以 `workspace.list` 为基座，`session.list`
-只补运行态。
+注意：
+- **会话归属工作区的信息在 `workspace.list` 的 WorkspaceView 里**（`session.list`
+  的 summary 无 workspaceId 字段）——分组以 `workspace.list` 为基座，`session.list`
+  只补运行态。
+- 所有 RPC 走点号形式路径；斜杠形式（官方 Connection 层的 goals/commands 等
+  自定义端点用）对 session/workspace/host 域无效。
 
 ## 6. 网关集成点（改动最小化）
 
 ```
 网关 (port 3081)  ──现有──▶ 官方 webserver (loopback)
    ├─ /  /pair  /status /api/*  …原样反代（不动）
-   └─ /m*                     ← 新增：网关自己答（返回 PWA 单页，不反代）
-PWA 页面内 fetch('/api/session/list') → 同源打到网关 → 走现有反代 → cookie 认证全复用
+   └─ /m                     ← 新增：网关自己答（返回 PWA 单页，不反代）
+PWA 页面内 fetch('/api/session.list') 与 WS(/api/events.*) → 同源打到网关
+   → 走现有反代 → cookie 认证全复用
 ```
 
-- 新增 `src/mobile-route.js`（约 60 行）：`/m` 前缀拦截，返回静态页 + 宽松 CSP；
-  其余路径完全不动（官方 webserver 可能对未知路径回 SPA fallback，故必须拦截而非反代）。
-- 新增 `mobile/index.html`：单文件 PWA（零依赖、零构建；先例：`../mimo/ui.html`）。
-- 扫码/入口：默认配对码仍指向官方 UI 不回归；`/pair` 页加"极简版"入口按钮（一行 HTML）。
-- 新增代码仅静态页 + 前端逻辑；认证/限速/保活/通知零改动。
+实现（M0 已落地）：`mobile/index.html` 单文件 PWA（零依赖、零构建；
+先例 `../mimo/ui.html`）+ `src/mobile-page.js` 加载器（每请求读盘，热更新友好）
++ `gateway.js` 内 `/m` 精确路由分支（gate 认证后、反代前；CSP 放行同源 WS）。
+扫码/入口：默认配对码仍指向官方 UI 不回归；`/pair` 页加"极简版"入口按钮（M3）。
 
 ## 7. 安全设计
 
@@ -163,10 +174,11 @@ PWA 页面内 fetch('/api/session/list') → 同源打到网关 → 走现有反
 
 ```
 dsh-ios-control/
-├─ mobile/              新：极简 PWA（index.html 单文件 + README）
-├─ src/mobile-route.js  新：/m 路由（~60 行）
-├─ src/                 现有不动
-└─ README.md            新增章节，主打"遥控器"叙事
+├─ mobile/index.html    新：极简 PWA 单页
+├─ src/mobile-page.js   新：页面加载器（每请求读盘）
+├─ src/gateway.js       改：/m 精确路由分支（~20 行）
+├─ test/mobile-route.test.js 新：路由测试
+└─ README.md            （M3）新增章节，主打"遥控器"叙事
 ```
 
 ## 9. 里程碑
@@ -185,14 +197,15 @@ dsh-ios-control/
 2. **`session/event` 渲染**：简化渲染需实测常见 event kind（user / assistant /
    tool-call / plan / todo），确认折叠规则；`view` 槽是宿主计算的渲染意图，
    优先消费它而非裸解析 event。
-3. **下行传输选型**：官方浏览器端用 WS（网关反代已验证可用），SSE 变体仅官方
-   Node 侧在用。PWA 两种都通吃（网关反代层不变），**M0 实测二选一**：
-   优先试 SSE（无 WS 升级依赖、与 keepalive 主题正交），失败则退回 WS 反代。
-   两方案的断连重连语义一致（backoff + 全量 resync + 连接代数）。
-4. **SSE/WS 心跳**：官方 WS 有网关注入 ping；SSE 变体无心跳——PWA 侧自带
-   空闲超时 + 重连，`session/subscribed` 帧的 `lastSeq` 做增量对齐校验。
-5. **plan-review 协议**：M0 只消费 `pendingInteraction` 标记；回答通道与 approval
-   同构（`POST /api/respond`），M1 以实测为准实现（question 的回答 payload 结构
+3. **下行传输**（✅ 2026-08-25 定案）：SSE 变体实测不存在（GET 回 426），PWA 走
+   WS 反代——隔离实例 rawUpgrade 实测 101 通过，mux open 首帧
+   `session/subscribed` 确认重放机制真实存在。
+4. **心跳**（✅ 定案）：WS 腿由网关现有 keepalive ping 覆盖（手机腿同样受益）；
+   PWA 侧仅保留指数退避重连 + onopen 全量 resync，无需自建心跳。
+5. **plan-review 协议**：M0 只消费标记；回答通道与 approval 同构
+   （`POST /api/respond`），M1 以实测为准实现（question 的回答 payload 结构
    开工时以 questions domain 契约为准核验）。
 6. **host.describe / /status 联动**：顶栏"电脑在线"复用现有宿主遥测结果，
    不新增探测。
+7. **真机验收清单**（M0 收口标准）：工作区分组与真实标题、五态状态点翻转、
+   "需要我"chip 对存量待审批的重建（依赖 mux 重放）、下拉刷新、弱网断连自动恢复。

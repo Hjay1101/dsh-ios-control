@@ -114,15 +114,18 @@ const ago = (ts) => {
   return Math.floor(s / 86400) + ' 天前'
 }
 
-/* ---------- RPC（官方客户端同款信封；LAN 明文 HTTP 下自带 uuid 实现） ---------- */
-async function rpc(endpoint, payload) {
+/* ---------- RPC ----------
+ * 形状实测定案（docs/MOBILE-PRODUCT.md §5）：POST /api/<namespace.method>
+ * 点号形式（斜杠形式 404）；信封与 server-response 解析同官方客户端。
+ * 自带 uuid 实现（LAN 明文 HTTP 无 secure context）。 */
+async function rpc(method, payload) {
   const rpcId = uuid()
   let res
   try {
-    res = await fetch('/api/' + endpoint, {
+    res = await fetch('/api/' + method, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload }),
+      body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
     })
   } catch { throw new Error('network') }
   if (res.status === 401) throw new Error('unauthorized')
@@ -160,7 +163,7 @@ async function resync() {
   if (syncing) return
   syncing = true
   try {
-    const [ws, ss] = await Promise.all([rpc('workspace/list', {}), rpc('session/list', {})])
+    const [ws, ss] = await Promise.all([rpc('workspace.list', {}), rpc('session.list', {})])
     if (!ws.ok) throw new Error(ws.error?.code ?? 'workspace/list failed')
     if (!ss.ok) throw new Error(ss.error?.code ?? 'session/list failed')
     state.workspaces = ws.value.items ?? []
@@ -191,51 +194,67 @@ async function loadHostInfo() {
   } catch { $('#host').innerHTML = '<span class="dot"></span>宿主离线' }
 }
 
-/* ---------- SSE downlinks ---------- */
-function openHostStream() {
-  const es = new EventSource('/api/events.host')
-  es.onopen = () => { resync(); loadHostInfo() }
-  es.onmessage = (ev) => {
-    let data = null
-    try { data = JSON.parse(ev.data) } catch { return }
-    const f = data?.payload ?? data
-    if (!f || typeof f.type !== 'string') return
-    if (f.type === 'host/session-status' && f.sessionId) {
-      const s = state.sessions.get(f.sessionId)
-      if (s) { s.running = Boolean(f.running); render() }
-    } else if (String(f.type).startsWith('host/')) {
-      resync() // added/removed/workspace-*/archived-* 一律全量对齐（低频，简单可靠）
-    }
+/* ---------- WebSocket downlinks ----------
+ * 实测定案：宿主无 SSE 变体（GET /api/events.* 回 426 upgrade required），
+ * 下行必须走 WS（官方浏览器端同款）。网关反代 WS 并注入 keepalive ping，
+ * 手机腿同样受益。断连语义：指数退避重连；host 流 onopen 全量 resync；
+ * mux 流 onopen 清空 pending、由未决请求重放（stable rpcId）重建。 */
+function connectWs(path, onOpen, onFrame) {
+  let backoff = 1000, closed = false
+  function connect() {
+    if (closed) return
+    let ws
+    try {
+      ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path)
+    } catch { retry(); return }
+    ws.onopen = () => { backoff = 1000; onOpen() }
+    ws.onmessage = (ev) => { try { onFrame(JSON.parse(ev.data)) } catch { /* skip bad frame */ } }
+    ws.onclose = () => { if (!closed) retry() }
+    ws.onerror = () => { try { ws.close() } catch { /* already closing */ } }
   }
+  function retry() { setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 30_000) }
+  connect()
+}
+
+function openHostStream() {
+  connectWs('/api/events.host',
+    () => { resync(); loadHostInfo() },
+    (raw) => {
+      const f = raw?.payload ?? raw
+      if (!f || typeof f.type !== 'string') return
+      if (f.type === 'host/session-status' && f.sessionId) {
+        const s = state.sessions.get(f.sessionId)
+        if (s) { s.running = Boolean(f.running); render() }
+      } else if (String(f.type).startsWith('host/')) {
+        resync() // added/removed/workspace-*/archived-* 一律全量对齐（低频，简单可靠）
+      }
+    })
 }
 
 function openMuxStream() {
-  const es = new EventSource('/api/events.mux')
-  es.onopen = () => {
-    // mux open 会重放所有未决 server-request（stable rpcId）：清空等重建
-    state.pending.clear(); rebuildPendingIndex(); render()
-  }
-  es.onmessage = (ev) => {
-    let data = null
-    try { data = JSON.parse(ev.data) } catch { return }
-    const outer = data ?? {}
-    const f = outer.payload ?? outer
-    if (!f || typeof f.type !== 'string') return
-    if (f.type === 'approval/requested' || f.type === 'question/requested') {
-      const tool = String(f.toolName ?? '').toLowerCase()
-      const isPlan = tool.includes('plan') || String(f.kind ?? '') === 'plan'
-      const kind = f.type === 'approval/requested' ? (isPlan ? 'plan-review' : 'approval') : 'question'
-      const id = String(f.approvalId ?? f.questionRpcId ?? outer.rpcId ?? uuid())
-      state.pending.set(`${kind === 'approval' ? 'a' : 'q'}:${id}`,
-        { sessionId: f.sessionId ?? outer.sessionId ?? null, kind })
-      rebuildPendingIndex(); render()
-    } else if (f.type === 'approval/resolved' || f.type === 'question/resolved') {
-      const id = String(f.approvalId ?? f.questionRpcId ?? '')
-      state.pending.delete('a:' + id); state.pending.delete('q:' + id)
-      rebuildPendingIndex(); render()
-    }
-    // session/title、session/event 等 M1 消费；M0 忽略其余帧
-  }
+  connectWs('/api/events.mux',
+    () => {
+      // mux open 会重放所有未决 server-request（stable rpcId）：清空等重建
+      state.pending.clear(); rebuildPendingIndex(); render()
+    },
+    (raw) => {
+      const f = raw?.payload ?? raw
+      if (!f || typeof f.type !== 'string') return
+      if (f.type === 'approval/requested' || f.type === 'question/requested') {
+        const tool = String(f.toolName ?? '').toLowerCase()
+        const isPlan = tool.includes('plan') || String(f.kind ?? '') === 'plan'
+        const kind = f.type === 'approval/requested' ? (isPlan ? 'plan-review' : 'approval') : 'question'
+        const id = String(f.approvalId ?? f.questionRpcId ?? raw.rpcId ?? uuid())
+        state.pending.set(`${kind === 'approval' ? 'a' : 'q'}:${id}`,
+          { sessionId: f.sessionId ?? raw.sessionId ?? null, kind })
+        rebuildPendingIndex(); render()
+      } else if (f.type === 'approval/resolved' || f.type === 'question/resolved') {
+        const id = String(f.approvalId ?? f.questionRpcId ?? '')
+        state.pending.delete('a:' + id); state.pending.delete('q:' + id)
+        rebuildPendingIndex(); render()
+      }
+      // session/title、session/event 等 M1 消费；M0 忽略其余帧
+    })
 }
 
 /* ---------- derive & render ---------- */
@@ -316,7 +335,9 @@ function render() {
 }
 
 function displayTitle(s) {
-  if (s.title) return s.title
+  // 实测：title 在 projections.values.title（session.list 顶层无 title 字段）
+  const t = s.projections?.values?.title ?? s.title
+  if (t) return t
   if (s.cwd) return String(s.cwd).split('/').filter(Boolean).pop() || '未命名任务'
   return '未命名任务'
 }
