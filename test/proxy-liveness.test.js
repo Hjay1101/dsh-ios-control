@@ -87,7 +87,8 @@ test('an upstream that never answers the upgrade gets a 504 after the handshake 
   // Accepts TCP, never writes a byte — the handshake must time out. The
   // socket must be resumed: a paused read end never consumes the peer's
   // FIN and server.close() would wait forever (a real HTTP server reads).
-  const upstream = createNetServer((socket) => socket.resume())
+  const sockets = new Set()
+  const upstream = createNetServer((socket) => { sockets.add(socket); socket.resume() })
   const upPort = await listen(upstream)
   const gw = await buildGateway(upPort, { upgradeTimeoutMs: 150 })
   try {
@@ -102,7 +103,9 @@ test('an upstream that never answers the upgrade gets a 504 after the handshake 
     assert.match(verdict, /504/)
   } finally {
     await gw.close()
-    upstream.closeAllConnections?.()
+    // net.Server has no closeAllConnections and a FIN-consumed socket still
+    // counts as active — destroy explicitly or close() waits forever.
+    for (const s of sockets) s.destroy()
     await new Promise((r) => upstream.close(r))
   }
 })
@@ -145,7 +148,7 @@ test('an established WS leg survives a quiet period longer than the handshake de
   }
 })
 
-test('event tap: an SSE handshake that never completes times out and the backoff retries', async () => {
+test('event tap: a handshake that never completes times out and the backoff retries', async () => {
   const connections = []
   const upstream = createNetServer((socket) => { connections.push(socket); socket.resume() })
   const upPort = await listen(upstream)
@@ -163,7 +166,9 @@ test('event tap: an SSE handshake that never completes times out and the backoff
     assert.equal(tap.state().connected, false)
   } finally {
     tap.close()
-    upstream.closeAllConnections?.()
+    // net.Server has no closeAllConnections: the resumed sockets stay open
+    // forever, so close() would hang until we destroy them ourselves.
+    for (const s of connections) s.destroy()
     await new Promise((r) => upstream.close(r))
   }
 })

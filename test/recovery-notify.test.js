@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import { connect as tcpConnect } from 'node:net'
 import fs from 'node:fs/promises'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -129,14 +130,25 @@ test('notifier: ntfy publishes as JSON so CJK titles never enter HTTP headers (r
 
 // ---------- event tap + end-to-end push policy through the gateway ----------
 
-/** DSH-flavoured upstream: mux SSE stream for the tap + raw WS echo for legs. */
+/** Server→client text frame, unmasked (RFC 6455: only client→server masks). */
+function wsTextFrame(str) {
+  const payload = Buffer.from(str, 'utf8')
+  if (payload.length < 126) return Buffer.concat([Buffer.from([0x81, payload.length]), payload])
+  return Buffer.concat([Buffer.from([0x81, 126, payload.length >> 8 & 0xff, payload.length & 0xff]), payload])
+}
+
+/**
+ * DSH-flavoured upstream: /api/events.mux speaks WebSocket (as the real host
+ * does since the live probe — a plain GET answers 426), plus raw WS echo for
+ * browser legs. send() broadcasts a mux envelope to every upgraded socket.
+ */
 function startMuxUpstream() {
-  let sseRes = null
   const upgradedSockets = new Set()
   const server = createServer((req, res) => {
+    // Mirror the real host: the endpoint exists only as a websocket.
     if (req.method === 'GET' && req.url === '/api/events.mux') {
-      res.writeHead(200, { 'content-type': 'text/event-stream' })
-      sseRes = res
+      res.writeHead(426, { 'content-type': 'text/plain;charset=UTF-8' })
+      res.end('upgrade required')
       return
     }
     res.writeHead(404).end()
@@ -144,14 +156,18 @@ function startMuxUpstream() {
   server.on('upgrade', (req, socket) => {
     upgradedSockets.add(socket)
     socket.on('close', () => upgradedSockets.delete(socket))
-    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
-    socket.on('data', (chunk) => socket.write(chunk))
+    const accept = createHash('sha1')
+      .update(String(req.headers['sec-websocket-key']) + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+      .digest('base64')
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`)
+    socket.on('data', (chunk) => socket.write(chunk)) // raw echo for legs
   })
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve({
       server, port: server.address().port,
-      send: (payload) => sseRes?.write(`data: ${JSON.stringify({ rpcId: 'x', payload })}\n\n`),
-      closeStream: () => { sseRes?.end(); for (const s of upgradedSockets) s.destroy() },
+      send: (payload) => { const frame = wsTextFrame(JSON.stringify({ rpcId: 'x', payload })); for (const s of upgradedSockets) s.write(frame) },
+      closeStream: () => { for (const s of upgradedSockets) s.destroy() },
     }))
   })
 }
