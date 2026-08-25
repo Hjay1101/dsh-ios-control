@@ -48,6 +48,12 @@
   }
   .chip.on{color:var(--txt); border-color:var(--accent)}
   .chip b{font-weight:600; margin-left:4px}
+  #plus{
+    margin-left:auto; width:34px; height:34px; border-radius:50%;
+    border:1px solid var(--accent); background:var(--card); color:var(--accent);
+    font-size:20px; line-height:1; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; padding:0;
+  }
   #banner{
     display:none; margin:0 16px 8px; padding:8px 12px; border-radius:10px;
     font-size:13px; background:rgba(255,159,10,.14); color:var(--appr);
@@ -55,8 +61,10 @@
   #banner.show{display:block}
   main{padding:0 16px calc(env(safe-area-inset-bottom) + 40px)}
   .group{margin:14px 0 4px; font-size:13px; font-weight:600; color:var(--dim);
-    display:flex; justify-content:space-between; padding:0 2px}
+    display:flex; justify-content:space-between; padding:4px 2px}
+  .group.tap{cursor:pointer}
   .group .g-badges span{margin-left:8px; font-weight:500}
+  .g-count{color:var(--dim); opacity:.7}
   .row{
     display:flex; align-items:center; gap:11px;
     background:var(--card); border:1px solid var(--line); border-radius:12px;
@@ -184,6 +192,7 @@
   <button class="chip on" data-f="all">全部<b></b></button>
   <button class="chip" data-f="running">运行中<b></b></button>
   <button class="chip" data-f="attention">需要我<b></b></button>
+  <button id="plus" title="新任务">＋</button>
 </nav>
 <div id="banner"></div>
 <main id="list"><div class="empty">加载中…</div></main>
@@ -265,6 +274,11 @@ const state = {
   dTitle: '',
   dBaseSeq: null,
   dHasMore: false,
+  // 收起的工作区分组（localStorage 持久化，'_other' 为“其他”桶）
+  collapsed: new Set((() => { try { return JSON.parse(localStorage.getItem('dsh-collapsed') ?? '[]') } catch { return [] } })()),
+}
+function saveCollapsed() {
+  try { localStorage.setItem('dsh-collapsed', JSON.stringify([...state.collapsed])) } catch { /* private mode */ }
 }
 const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return undefined } })()
 
@@ -421,10 +435,10 @@ function render() {
       if (!s || !isVisible(s, pendMap)) continue
       rows.push(s)
     }
-    groups.push({ title: w.title || w.path, rows })
+    groups.push({ id: w.workspaceId, title: w.title || w.path, rows })
   }
   const loose = [...state.sessions.values()].filter((s) => !owned.has(s.sessionId) && isVisible(s, pendMap))
-  if (loose.length > 0) groups.push({ title: '其他', rows: loose })
+  if (loose.length > 0) groups.push({ id: '_other', title: '其他', rows: loose })
 
   const order = { approval: 0, 'plan-review': 1, question: 2, running: 3, idle: 4 }
   for (const g of groups) {
@@ -446,9 +460,13 @@ function render() {
     if (filtered.length === 0) continue
     const gRun = filtered.filter((s) => rowKindOf(s, pendMap) === 'running').length
     const gAtt = filtered.filter((s) => { const k = rowKindOf(s, pendMap); return k !== 'running' && k !== 'idle' }).length
-    html.push('<div class="group"><span>' + esc(g.title) + '</span><span class="g-badges">' +
+    const collapsed = state.collapsed.has(g.id)
+    html.push('<div class="group tap" data-g="' + esc(g.id) + '">' +
+      '<span>' + (collapsed ? '▸ ' : '▾ ') + esc(g.title) + '</span><span class="g-badges">' +
       (gRun ? '<span style="color:var(--run)">运行 ' + gRun + '</span>' : '') +
-      (gAtt ? '<span style="color:var(--appr)">待处理 ' + gAtt + '</span>' : '') + '</span></div>')
+      (gAtt ? '<span style="color:var(--appr)">待处理 ' + gAtt + '</span>' : '') +
+      '<span class="g-count">' + filtered.length + '</span></span></div>')
+    if (collapsed) { shown += filtered.length; continue }
     for (const s of filtered) {
       const k = rowKindOf(s, pendMap)
       shown++
@@ -775,7 +793,7 @@ document.querySelectorAll('.chip').forEach((c) => {
   c.addEventListener('click', () => { state.filter = c.dataset.f; render() })
 })
 
-// 列表点击代理：操作按钮 → 一键回答；行 → 详情
+// 列表点击代理：操作按钮 → 一键回答；分组头 → 收起/展开；行 → 详情
 $('#list').addEventListener('click', (ev) => {
   const actBtn = ev.target.closest('.btn[data-act]')
   if (actBtn) {
@@ -783,9 +801,29 @@ $('#list').addEventListener('click', (ev) => {
     answer(actBtn.closest('.acts').dataset.key, actBtn.dataset.act)
     return
   }
+  const group = ev.target.closest('.group[data-g]')
+  if (group) {
+    const g = group.dataset.g
+    if (state.collapsed.has(g)) state.collapsed.delete(g)
+    else state.collapsed.add(g)
+    saveCollapsed()
+    render()
+    return
+  }
   const row = ev.target.closest('.row[data-sid]')
   if (row) openDetail(row.dataset.sid)
 })
+
+// 新建会话：空 payload（全字段可选，契约允许），成功后直接进详情发第一句话
+async function createSession() {
+  try {
+    const r = await rpc('session.create', {})
+    if (!r.ok) { setBanner('创建失败：' + (r.error?.message ?? '?')); return }
+    await resync()
+    openDetail(r.value.sessionId)
+  } catch (err) { setBanner('创建失败（' + err.message + '）') }
+}
+$('#plus').addEventListener('click', createSession)
 $('#back').addEventListener('click', closeDetail)
 $('#send').addEventListener('click', sendPrompt)
 $('#input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') sendPrompt() })
