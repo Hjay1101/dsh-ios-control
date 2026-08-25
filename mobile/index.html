@@ -112,15 +112,25 @@
     border:none; background:none; color:var(--accent); font-size:15px; padding:6px 10px 6px 0;
     cursor:pointer; font-weight:500;
   }
-  #stream{flex:1; overflow-y:auto; padding:12px 16px 8px; -webkit-user-select:text; user-select:text}
+  #stream{flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    padding:12px 16px 8px; -webkit-user-select:text; user-select:text}
   .msg{margin:9px 0; font-size:14px; line-height:1.55}
   .msg.user{
     background:rgba(10,132,255,.22); border-radius:14px 14px 4px 14px;
     padding:9px 12px; margin-left:44px; white-space:pre-wrap; word-break:break-word;
   }
   .msg.assistant{white-space:pre-wrap; word-break:break-word; color:var(--txt)}
+  /* 思维链：弱化灰字 + 左侧细线，与正文区分 */
+  .msg.thinking{
+    font-size:12px; line-height:1.5; color:var(--dim); opacity:.85;
+    white-space:pre-wrap; word-break:break-word;
+    border-left:2px solid var(--line); padding-left:9px; margin:10px 0;
+  }
   .msg.tool{font-size:12px; color:var(--dim); padding-left:6px;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  /* 流式直播区（实时思维链 + 回复中），正式消息落地后清空 */
+  #live{display:none}
+  #live.on{display:block}
   #more{display:block; margin:10px auto; border:none; background:var(--card); color:var(--accent);
     border-radius:999px; padding:7px 16px; font-size:12px}
   /* 待处理问题卡（详情页顶部） */
@@ -169,7 +179,7 @@
 <div id="detail">
   <header><button id="back">‹ 任务</button><h1 id="dtitle"></h1></header>
   <div id="askcard" style="display:none"></div>
-  <div id="stream"><div class="empty">加载中…</div></div>
+  <div id="stream"><div class="empty">加载中…</div><div id="live"></div></div>
   <div id="composer">
     <input id="input" type="text" placeholder="发消息给这个任务…" autocomplete="off">
     <button id="send">↑</button>
@@ -553,7 +563,8 @@ async function openDetail(sid) {
   state.dHasMore = false
   $('#dtitle').textContent = state.dTitle
   $('#detail').classList.add('open')
-  $('#stream').innerHTML = '<div class="empty">加载中…</div>'
+  $('#stream').innerHTML = '<div class="empty">加载中…</div><div id="live"></div>'
+  clearLive()
   $('#input').value = ''
   renderAskCard()
   await loadHistory(false)
@@ -584,6 +595,10 @@ async function loadHistory(older) {
       anchor?.scrollIntoView()
     } else {
       $('#stream').innerHTML = html.length > 0 ? html.join('') : '<div class="empty">还没有消息</div>'
+      // innerHTML rewrite drops the live node; rebuild it and restore any
+      // in-flight stream buffer.
+      $('#stream').insertAdjacentHTML('beforeend', '<div id="live"></div>')
+      renderLive(false)
     }
     renderMoreButton()
   } catch (err) {
@@ -598,7 +613,8 @@ function renderMoreButton() {
   }
 }
 
-/* 人话视图：chunk/step/retry/compaction 等中间态一律折叠（实测占 98%+） */
+/* 人话视图：chunk/step/retry/compaction 等中间态一律折叠（实测占 98%+）；
+ * 思维链（reasoning）按用户要求保留——弱化灰字呈现。 */
 function eventToHtml(entry) {
   const event = entry.event ?? entry
   const view = entry.view
@@ -609,12 +625,17 @@ function eventToHtml(entry) {
     return text ? '<div class="msg user">' + esc(text) + '</div>' : null
   }
   if (t === 'assistant/message') {
-    const parts = []
+    // 思维链独立成弱化块；连续 text 合并为一个正文块；tool-call 一行灰字
+    const out = []
+    let texts = []
+    const flush = () => { if (texts.length > 0) { out.push('<div class="msg assistant">' + texts.join('\n') + '</div>'); texts = [] } }
     for (const b of d.message?.content ?? []) {
-      if (b.type === 'text' && b.text) parts.push(esc(b.text))
-      else if (b.type === 'tool-call' && b.name) parts.push(toolLine(b.name, null))
+      if (b.type === 'reasoning' && b.text) { flush(); out.push('<div class="msg thinking">' + esc(b.text) + '</div>') }
+      else if (b.type === 'text' && b.text) texts.push(esc(b.text))
+      else if (b.type === 'tool-call' && b.name) { flush(); out.push(toolLine(b.name, null)) }
     }
-    return parts.length > 0 ? '<div class="msg assistant">' + parts.join('\n') + '</div>' : null
+    flush()
+    return out.length > 0 ? out.join('') : null
   }
   if (t === 'tool/call') {
     const title = view?.for === 'call' ? view.view.title : null
@@ -629,13 +650,44 @@ function eventToHtml(entry) {
 function toolLine(name, title) {
   return '<div class="msg tool">' + esc(title ?? ('🔧 ' + (name ?? ''))) + '</div>'
 }
+/* 实时直播区：assistant/chunk 的 reasoning-delta / text-delta 打字机式呈现；
+ * 正式 assistant/message 落地（history 同帧到达）后清空，避免重复。 */
+let liveThink = '', liveText = ''
+function renderLive(forceScroll) {
+  const live = $('#live')
+  if (liveThink === '' && liveText === '') { live.className = ''; live.innerHTML = ''; return }
+  live.className = 'on'
+  live.innerHTML = '<div class="msg thinking" id="livethink"></div>' +
+    (liveText !== '' ? '<div class="msg assistant" id="liveres"></div>' : '')
+  $('#livethink').textContent = '💭 ' + liveThink
+  const res = $('#liveres')
+  if (res) res.textContent = liveText
+  const stream = $('#stream')
+  if (forceScroll || stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120) {
+    stream.scrollTop = stream.scrollHeight
+  }
+}
+function clearLive() { liveThink = ''; liveText = ''; renderLive(false) }
+
 function onDetailEvent(frame) {
   if (!frame || frame.sessionId !== state.detail) return
+  const event = frame.event ?? frame
+  const t = event.type
+  // 流式 chunk：思维链与正文实时增量
+  if (t === 'assistant/chunk') {
+    const c = (event.data ?? {}).chunk
+    if (!c) return
+    if (c.type === 'reasoning-delta') { liveThink += c.text ?? ''; renderLive(false) }
+    else if (c.type === 'text-delta') { liveText += c.text ?? ''; renderLive(false) }
+    return
+  }
+  // 一条完整消息落库 → 直播区让位给正式渲染
+  if (t === 'assistant/message') clearLive()
   const html = eventToHtml(frame)
   if (!html) return
   const stream = $('#stream')
   const atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80
-  stream.insertAdjacentHTML('beforeend', html)
+  $('#live').insertAdjacentHTML('beforebegin', html)
   if (atBottom) stream.scrollTop = stream.scrollHeight
 }
 
