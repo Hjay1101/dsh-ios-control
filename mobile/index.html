@@ -6,7 +6,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="DSH">
@@ -97,10 +97,13 @@
   }
   #pull.armed{transform:translateY(0)}
 
-  /* ---------- 会话详情（推入式全屏） ---------- */
+  /* ---------- 会话详情（推入式全屏） ----------
+   * touch-action 声明手势归属：覆盖层自身不滚、只有 stream 纵向滚，
+   * 否则 iOS 会把首触判给底层文档（表现为“进去滚不动，过一会才行”）。 */
   #detail{
     position:fixed; inset:0; background:var(--bg); z-index:20;
     display:none; flex-direction:column; padding-top:env(safe-area-inset-top);
+    touch-action:none;
   }
   #detail.open{display:flex}
   #detail header{
@@ -113,7 +116,8 @@
     cursor:pointer; font-weight:500;
   }
   #stream{flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
-    padding:12px 16px 8px; -webkit-user-select:text; user-select:text}
+    padding:12px 16px 8px; touch-action:pan-y; overscroll-behavior:contain;
+    -webkit-user-select:text; user-select:text}
   .msg{margin:9px 0; font-size:14px; line-height:1.55}
   .msg.user{
     background:rgba(10,132,255,.22); border-radius:14px 14px 4px 14px;
@@ -131,6 +135,14 @@
   /* 流式直播区（实时思维链 + 回复中），正式消息落地后清空 */
   #live{display:none}
   #live.on{display:block}
+  /* 思维链折叠组件：一行持续滚动显示最新内容，点击展开全文（对齐桌面端交互） */
+  .msg.thinking{font-size:12px; color:var(--dim);
+    border-left:2px solid var(--line); padding-left:9px; margin:10px 0}
+  .th-head{display:block; cursor:pointer; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; line-height:1.5; -webkit-user-select:none; user-select:none}
+  .th-full{white-space:pre-wrap; word-break:break-word; line-height:1.55;
+    margin-top:6px; opacity:.9; -webkit-user-select:text; user-select:text}
+  .collapsed .th-full{display:none}
   #more{display:block; margin:10px auto; border:none; background:var(--card); color:var(--accent);
     border-radius:999px; padding:7px 16px; font-size:12px}
   /* 待处理问题卡（详情页顶部） */
@@ -152,11 +164,12 @@
   }
   #input{
     flex:1; border:1px solid var(--line); background:var(--card); color:var(--txt);
-    border-radius:18px; padding:10px 14px; font-size:15px; outline:none;
+    border-radius:18px; padding:8px 14px; font-size:16px; outline:none;
     -webkit-user-select:text; user-select:text;
   }
   #send{border:none; background:var(--accent); color:#fff; border-radius:50%;
-    width:40px; height:40px; font-size:17px; cursor:pointer; flex:0 0 auto}
+    width:40px; height:40px; font-size:18px; cursor:pointer; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center; padding:0; line-height:1}
 </style>
 </head>
 <body>
@@ -614,7 +627,12 @@ function renderMoreButton() {
 }
 
 /* 人话视图：chunk/step/retry/compaction 等中间态一律折叠（实测占 98%+）；
- * 思维链（reasoning）按用户要求保留——弱化灰字呈现。 */
+ * 思维链对齐桌面端交互：折叠一行 + 点击展开全文。 */
+function thinkingBlock(text) {
+  const head = text.length > 60 ? '💭 …' + esc(text.slice(-60)) : '💭 ' + esc(text)
+  return '<div class="msg thinking collapsed"><span class="th-head">' + head + '</span>' +
+    '<div class="th-full">' + esc(text) + '</div></div>'
+}
 function eventToHtml(entry) {
   const event = entry.event ?? entry
   const view = entry.view
@@ -625,12 +643,12 @@ function eventToHtml(entry) {
     return text ? '<div class="msg user">' + esc(text) + '</div>' : null
   }
   if (t === 'assistant/message') {
-    // 思维链独立成弱化块；连续 text 合并为一个正文块；tool-call 一行灰字
+    // 思维链独立成可展开块；连续 text 合并为一个正文块；tool-call 一行灰字
     const out = []
     let texts = []
     const flush = () => { if (texts.length > 0) { out.push('<div class="msg assistant">' + texts.join('\n') + '</div>'); texts = [] } }
     for (const b of d.message?.content ?? []) {
-      if (b.type === 'reasoning' && b.text) { flush(); out.push('<div class="msg thinking">' + esc(b.text) + '</div>') }
+      if (b.type === 'reasoning' && b.text) { flush(); out.push(thinkingBlock(b.text)) }
       else if (b.type === 'text' && b.text) texts.push(esc(b.text))
       else if (b.type === 'tool-call' && b.name) { flush(); out.push(toolLine(b.name, null)) }
     }
@@ -650,16 +668,22 @@ function eventToHtml(entry) {
 function toolLine(name, title) {
   return '<div class="msg tool">' + esc(title ?? ('🔧 ' + (name ?? ''))) + '</div>'
 }
-/* 实时直播区：assistant/chunk 的 reasoning-delta / text-delta 打字机式呈现；
- * 正式 assistant/message 落地（history 同帧到达）后清空，避免重复。 */
-let liveThink = '', liveText = ''
+/* 实时直播区：reasoning 一行持续滚动显示最新内容（点击展开全文），
+ * 正文打字机式呈现；正式 assistant/message 落地后清空，避免重复。 */
+let liveThink = '', liveText = '', liveOpen = false
 function renderLive(forceScroll) {
   const live = $('#live')
   if (liveThink === '' && liveText === '') { live.className = ''; live.innerHTML = ''; return }
   live.className = 'on'
-  live.innerHTML = '<div class="msg thinking" id="livethink"></div>' +
+  const tail = liveThink.length > 60 ? '…' + liveThink.slice(-60) : liveThink
+  live.innerHTML =
+    (liveThink !== ''
+      ? '<div class="msg thinking' + (liveOpen ? '' : ' collapsed') + '" id="livethink">' +
+        '<span class="th-head">💭 ' + esc(tail) + '</span>' +
+        '<div class="th-full"></div></div>'
+      : '') +
     (liveText !== '' ? '<div class="msg assistant" id="liveres"></div>' : '')
-  $('#livethink').textContent = '💭 ' + liveThink
+  if (liveThink !== '') $('#livethink .th-full').textContent = liveThink
   const res = $('#liveres')
   if (res) res.textContent = liveText
   const stream = $('#stream')
@@ -667,7 +691,7 @@ function renderLive(forceScroll) {
     stream.scrollTop = stream.scrollHeight
   }
 }
-function clearLive() { liveThink = ''; liveText = ''; renderLive(false) }
+function clearLive() { liveThink = ''; liveText = ''; liveOpen = false; renderLive(false) }
 
 function onDetailEvent(frame) {
   if (!frame || frame.sessionId !== state.detail) return
@@ -765,6 +789,16 @@ $('#list').addEventListener('click', (ev) => {
 $('#back').addEventListener('click', closeDetail)
 $('#send').addEventListener('click', sendPrompt)
 $('#input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') sendPrompt() })
+
+// 思维链块点击展开/折叠（历史块与直播块通用）；直播块记住展开状态，
+// 避免下一条 delta 重绘时被折回去
+$('#stream').addEventListener('click', (ev) => {
+  const head = ev.target.closest('.th-head')
+  if (!head) return
+  const block = head.closest('.msg.thinking')
+  block.classList.toggle('collapsed')
+  if (block.id === 'livethink') liveOpen = !block.classList.contains('collapsed')
+})
 
 // 下拉刷新
 let touchStartY = 0, pulling = false
