@@ -76,6 +76,7 @@ export function createGateway({
   resolveDevice = null, tunnelHeartbeatFile = null,
   hostProbeIntervalMs = 30_000, notifySnapshot = null,
   upgradeTimeoutMs = 10_000,
+  mobilePage = null,
 }) {
   const sockets = new Set()
   const legs = new Map() // leg id → { id, path, connectedAt, keepalive }
@@ -289,6 +290,28 @@ export function createGateway({
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       res.end(LEGACY_PAGE_HTML)
       return
+    }
+    // Mobile PWA ("遥控器", docs/MOBILE-PRODUCT.md): same trust level as the
+    // official UI root — behind the gate, before the proxy. Exact-path only;
+    // anything else under /m* keeps flowing to the upstream. A missing page
+    // asset (mobilePage() → null) falls through to the proxy untouched.
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      typeof mobilePage === 'function'
+    ) {
+      const mPath = req.url.split('?', 1)[0]
+      if (mPath === '/m' || mPath === '/m/') {
+        const html = mobilePage()
+        if (html !== null) {
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'",
+          })
+          res.end(req.method === 'HEAD' ? undefined : html)
+          return
+        }
+      }
     }
     proxyRequest(req, res, target(), (error) => recordUpstreamError('proxy', error), {
       onResponded: () => { lastUpstreamOkAt = Date.now() },

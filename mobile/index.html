@@ -1,0 +1,382 @@
+<!doctype html>
+<!-- dsh-ios-control · mobile PWA (M0): 任务遥控器首屏。
+     零依赖单文件；同源调 /api/*（网关反代 + cookie 认证）。
+     设计契约见 docs/MOBILE-PRODUCT.md（RPC 信封 / SSE 帧消费 / 五态状态点）。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DSH">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<title>DSH 任务</title>
+<style>
+  :root{
+    --bg:#0b0d10; --card:#15181d; --line:#232830; --txt:#e8eaed; --dim:#8b929c;
+    --run:#34c759; --appr:#ff9f0a; --ques:#bf5af2; --plan:#64d2ff; --idle:#5a616b;
+    --accent:#0a84ff;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f2f2f7; --card:#fff; --line:#e3e3e8; --txt:#1c1c1e; --dim:#6e6e73;
+      --run:#30d158; --appr:#ff9500; --ques:#af52de; --plan:#32ade6; --idle:#aeaeb2; }
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;
+    font-size:16px; padding-bottom:env(safe-area-inset-bottom);
+    -webkit-user-select:none; user-select:none;
+  }
+  header{
+    padding:calc(env(safe-area-inset-top) + 14px) 16px 10px;
+    display:flex; align-items:baseline; justify-content:space-between; gap:8px;
+  }
+  header h1{font-size:26px; font-weight:700; margin:0}
+  #host{font-size:11px; color:var(--dim); text-align:right; line-height:1.35; max-width:52%}
+  #host .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--idle);margin-right:4px;vertical-align:1px}
+  #host .dot.on{background:var(--run)}
+  nav{
+    display:flex; gap:8px; padding:4px 16px 10px; position:sticky; top:0;
+    background:var(--bg); z-index:5;
+  }
+  .chip{
+    border:1px solid var(--line); background:var(--card); color:var(--dim);
+    border-radius:999px; padding:6px 14px; font-size:13px; cursor:pointer;
+  }
+  .chip.on{color:var(--txt); border-color:var(--accent)}
+  .chip b{font-weight:600; margin-left:4px}
+  #banner{
+    display:none; margin:0 16px 8px; padding:8px 12px; border-radius:10px;
+    font-size:13px; background:rgba(255,159,10,.14); color:var(--appr);
+  }
+  #banner.show{display:block}
+  main{padding:0 16px calc(env(safe-area-inset-bottom) + 40px)}
+  .group{margin:14px 0 4px; font-size:13px; font-weight:600; color:var(--dim);
+    display:flex; justify-content:space-between; padding:0 2px}
+  .group .g-badges span{margin-left:8px; font-weight:500}
+  .row{
+    display:flex; align-items:center; gap:11px;
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:12px 14px; margin:7px 0; min-height:52px;
+  }
+  .row .st{flex:0 0 auto; width:11px; height:11px; border-radius:50%; background:var(--idle)}
+  .row.running .st{background:var(--run)}
+  .row.approval .st,.row.question .st,.row.plan-review .st{animation:pulse 1.6s ease-in-out infinite}
+  .row.approval .st{background:var(--appr)} .row.question .st{background:var(--ques)} .row.plan-review .st{background:var(--plan)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .row .meta{flex:1; min-width:0}
+  .row .title{font-size:15px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .row .sub{display:block;font-size:12px; color:var(--dim); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .row .flag{flex:0 0 auto; font-size:11px; font-weight:600; border-radius:6px; padding:3px 7px}
+  .flag.approval{color:var(--appr); background:rgba(255,159,10,.15)}
+  .flag.question{color:var(--ques); background:rgba(191,90,242,.15)}
+  .flag.plan-review{color:var(--plan); background:rgba(100,210,255,.15)}
+  .empty{text-align:center; color:var(--dim); font-size:14px; padding:48px 0}
+  #pull{
+    position:fixed; top:calc(env(safe-area-inset-top) + 6px); left:0; right:0;
+    text-align:center; font-size:12px; color:var(--dim);
+    transform:translateY(-32px); transition:transform .18s; pointer-events:none;
+  }
+  #pull.armed{transform:translateY(0)}
+</style>
+</head>
+<body>
+<div id="pull">↓ 松开刷新</div>
+<header>
+  <h1>任务</h1>
+  <div id="host"><span class="dot"></span>连接中…</div>
+</header>
+<nav>
+  <button class="chip on" data-f="all">全部<b></b></button>
+  <button class="chip" data-f="running">运行中<b></b></button>
+  <button class="chip" data-f="attention">需要我<b></b></button>
+</nav>
+<div id="banner"></div>
+<main id="list"><div class="empty">加载中…</div></main>
+
+<script>
+'use strict'
+/* ---------- utils ---------- */
+const $ = (sel) => document.querySelector(sel)
+const uuid = () => {
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`
+}
+const ago = (ts) => {
+  const s = Math.max(0, (Date.now() - ts) / 1000)
+  if (s < 60) return '刚刚'
+  if (s < 3600) return Math.floor(s / 60) + ' 分钟前'
+  if (s < 86400) return Math.floor(s / 3600) + ' 小时前'
+  return Math.floor(s / 86400) + ' 天前'
+}
+
+/* ---------- RPC（官方客户端同款信封；LAN 明文 HTTP 下自带 uuid 实现） ---------- */
+async function rpc(endpoint, payload) {
+  const rpcId = uuid()
+  let res
+  try {
+    res = await fetch('/api/' + endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload }),
+    })
+  } catch { throw new Error('network') }
+  if (res.status === 401) throw new Error('unauthorized')
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  const full = await res.json()
+  if (full.rpcId !== rpcId) throw new Error('rpcId mismatch')
+  return full.result // {ok:true,value} | {ok:false,error}
+}
+
+/* ---------- state ---------- */
+const state = {
+  workspaces: [],            // WorkspaceView[]（API 顺序 = 展示顺序）
+  archived: new Set(),
+  sessions: new Map(),       // sessionId → summary
+  pending: new Map(),        // key `${kind}:${id}` → {sessionId, kind}
+  filter: 'all',
+  loadedOnce: false,
+}
+
+const pendingOfSession = new Map() // 派生：sessionId → kind（render 前 rebuild）
+
+function rebuildPendingIndex() {
+  pendingOfSession.clear()
+  const rank = { approval: 0, 'plan-review': 1, question: 2 }
+  for (const p of state.pending.values()) {
+    if (!p.sessionId) continue
+    const prev = pendingOfSession.get(p.sessionId)
+    if (prev === undefined || rank[p.kind] < rank[prev]) pendingOfSession.set(p.sessionId, p.kind)
+  }
+}
+
+/* ---------- data refresh ---------- */
+let syncing = false
+async function resync() {
+  if (syncing) return
+  syncing = true
+  try {
+    const [ws, ss] = await Promise.all([rpc('workspace/list', {}), rpc('session/list', {})])
+    if (!ws.ok) throw new Error(ws.error?.code ?? 'workspace/list failed')
+    if (!ss.ok) throw new Error(ss.error?.code ?? 'session/list failed')
+    state.workspaces = ws.value.items ?? []
+    state.archived = new Set(ws.value.archivedSessionIds ?? [])
+    state.sessions.clear()
+    for (const s of ss.value.items ?? []) state.sessions.set(s.sessionId, s)
+    state.loadedOnce = true
+    setBanner('')
+    render()
+  } catch (err) {
+    if (err.message === 'unauthorized') {
+      setBanner('登录已过期 —— 请在桌面端聊天框说「给我配对码」重新扫码')
+    } else {
+      setBanner('同步失败（' + err.message + '），下拉重试')
+    }
+    render()
+  } finally { syncing = false }
+}
+
+async function loadHostInfo() {
+  try {
+    const r = await rpc('host.describe', {})
+    const el = $('#host')
+    if (r.ok && r.value) {
+      el.innerHTML = '<span class="dot on"></span>' + esc(r.value.model ?? 'DSH') +
+        (r.value.version ? ' · v' + esc(String(r.value.version)) : '')
+    } else { el.innerHTML = '<span class="dot"></span>宿主离线' }
+  } catch { $('#host').innerHTML = '<span class="dot"></span>宿主离线' }
+}
+
+/* ---------- SSE downlinks ---------- */
+function openHostStream() {
+  const es = new EventSource('/api/events.host')
+  es.onopen = () => { resync(); loadHostInfo() }
+  es.onmessage = (ev) => {
+    let data = null
+    try { data = JSON.parse(ev.data) } catch { return }
+    const f = data?.payload ?? data
+    if (!f || typeof f.type !== 'string') return
+    if (f.type === 'host/session-status' && f.sessionId) {
+      const s = state.sessions.get(f.sessionId)
+      if (s) { s.running = Boolean(f.running); render() }
+    } else if (String(f.type).startsWith('host/')) {
+      resync() // added/removed/workspace-*/archived-* 一律全量对齐（低频，简单可靠）
+    }
+  }
+}
+
+function openMuxStream() {
+  const es = new EventSource('/api/events.mux')
+  es.onopen = () => {
+    // mux open 会重放所有未决 server-request（stable rpcId）：清空等重建
+    state.pending.clear(); rebuildPendingIndex(); render()
+  }
+  es.onmessage = (ev) => {
+    let data = null
+    try { data = JSON.parse(ev.data) } catch { return }
+    const outer = data ?? {}
+    const f = outer.payload ?? outer
+    if (!f || typeof f.type !== 'string') return
+    if (f.type === 'approval/requested' || f.type === 'question/requested') {
+      const tool = String(f.toolName ?? '').toLowerCase()
+      const isPlan = tool.includes('plan') || String(f.kind ?? '') === 'plan'
+      const kind = f.type === 'approval/requested' ? (isPlan ? 'plan-review' : 'approval') : 'question'
+      const id = String(f.approvalId ?? f.questionRpcId ?? outer.rpcId ?? uuid())
+      state.pending.set(`${kind === 'approval' ? 'a' : 'q'}:${id}`,
+        { sessionId: f.sessionId ?? outer.sessionId ?? null, kind })
+      rebuildPendingIndex(); render()
+    } else if (f.type === 'approval/resolved' || f.type === 'question/resolved') {
+      const id = String(f.approvalId ?? f.questionRpcId ?? '')
+      state.pending.delete('a:' + id); state.pending.delete('q:' + id)
+      rebuildPendingIndex(); render()
+    }
+    // session/title、session/event 等 M1 消费；M0 忽略其余帧
+  }
+}
+
+/* ---------- derive & render ---------- */
+function rowKind(s) {
+  const p = pendingOfSession.get(s.sessionId)
+  if (p) return p
+  return s.running ? 'running' : 'idle'
+}
+function isVisible(s) {
+  // 空白会话（从未发过消息）且不运行、无待处理 → 隐藏（与官方列表一致）
+  if (s.blank && !s.running && !pendingOfSession.has(s.sessionId)) return false
+  if (state.archived.has(s.sessionId)) return false
+  return true
+}
+
+function render() {
+  rebuildPendingIndex()
+  const list = $('#list')
+  if (!state.loadedOnce) { list.innerHTML = '<div class="empty">加载中…</div>'; updateChips(); return }
+
+  const owned = new Set()
+  for (const w of state.workspaces) for (const id of w.sessionIds ?? []) owned.add(id)
+
+  const groups = []
+  for (const w of state.workspaces) {
+    const rows = []
+    for (const id of w.sessionIds ?? []) {
+      const s = state.sessions.get(id)
+      if (!s || !isVisible(s)) continue
+      rows.push(s)
+    }
+    groups.push({ title: w.title || w.path, rows })
+  }
+  const loose = [...state.sessions.values()].filter((s) => !owned.has(s.sessionId) && isVisible(s))
+  if (loose.length > 0) groups.push({ title: '其他', rows: loose })
+
+  const order = { approval: 0, 'plan-review': 1, question: 2, running: 3, idle: 4 }
+  for (const g of groups) {
+    g.rows.sort((a, b) =>
+      (order[rowKind(a)] - order[rowKind(b)]) || ((b.updatedAt ?? 0) - (a.updatedAt ?? 0)))
+  }
+
+  let shown = 0, runCount = 0, attCount = 0
+  const html = []
+  for (const g of groups) {
+    const filtered = g.rows.filter((s) => {
+      const k = rowKind(s)
+      if (k === 'running') runCount++
+      if (k !== 'running' && k !== 'idle') attCount++
+      if (state.filter === 'running') return k === 'running'
+      if (state.filter === 'attention') return k !== 'running' && k !== 'idle'
+      return true
+    })
+    if (filtered.length === 0) continue
+    const gRun = filtered.filter((s) => rowKind(s) === 'running').length
+    const gAtt = filtered.filter((s) => { const k = rowKind(s); return k !== 'running' && k !== 'idle' }).length
+    html.push('<div class="group"><span>' + esc(g.title) + '</span><span class="g-badges">' +
+      (gRun ? '<span style="color:var(--run)">运行 ' + gRun + '</span>' : '') +
+      (gAtt ? '<span style="color:var(--appr)">待处理 ' + gAtt + '</span>' : '') + '</span></div>')
+    for (const s of filtered) {
+      const k = rowKind(s)
+      shown++
+      const label = { approval: '待审批', question: '提问', 'plan-review': '计划评审' }[k]
+      const sub = [s.parentSessionId ? '↳ 子任务' : null,
+        ago(s.updatedAt ?? Date.now())].filter(Boolean).join(' · ')
+      html.push('<div class="row ' + k + '">' +
+        '<span class="st"></span>' +
+        '<span class="meta"><span class="title">' + esc(displayTitle(s)) + '</span>' +
+        '<span class="sub">' + esc(sub) + '</span></span>' +
+        (label ? '<span class="flag ' + k + '">' + label + '</span>' : '') +
+        '</div>')
+    }
+  }
+  list.innerHTML = shown === 0
+    ? '<div class="empty">' + (state.filter === 'all' ? '没有进行中的任务' : '该筛选下暂无任务') + '</div>'
+    : html.join('')
+  updateChips(runCount, attCount)
+}
+
+function displayTitle(s) {
+  if (s.title) return s.title
+  if (s.cwd) return String(s.cwd).split('/').filter(Boolean).pop() || '未命名任务'
+  return '未命名任务'
+}
+function updateChips(runCount, attCount) {
+  document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c.dataset.f === state.filter))
+  document.querySelector('.chip[data-f=all] b').textContent = ''
+  document.querySelector('.chip[data-f=running] b').textContent = runCount || countBy('running') || ''
+  document.querySelector('.chip[data-f=attention] b').textContent = attCount || countBy('attention') || ''
+}
+function countBy(kind) {
+  let n = 0
+  for (const s of state.sessions.values()) {
+    if (!isVisible(s)) continue
+    const k = rowKind(s)
+    if (kind === 'running' && k === 'running') n++
+    if (kind === 'attention' && k !== 'running' && k !== 'idle') n++
+  }
+  return n
+}
+function esc(t) {
+  return String(t).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]))
+}
+function setBanner(text) {
+  const b = $('#banner')
+  b.textContent = text
+  b.classList.toggle('show', text !== '')
+}
+
+/* ---------- interactions ---------- */
+document.querySelectorAll('.chip').forEach((c) => {
+  c.addEventListener('click', () => { state.filter = c.dataset.f; render() })
+})
+
+// 下拉刷新（顶部下拉 ≥28px 松手触发）
+let touchStartY = 0, pulling = false
+const pull = $('#pull')
+document.addEventListener('touchstart', (ev) => {
+  if (window.scrollY <= 0) { touchStartY = ev.touches[0].clientY; pulling = true }
+}, { passive: true })
+document.addEventListener('touchmove', (ev) => {
+  if (!pulling) return
+  const dy = ev.touches[0].clientY - touchStartY
+  pull.classList.toggle('armed', dy > 28)
+}, { passive: true })
+document.addEventListener('touchend', () => {
+  if (pulling && pull.classList.contains('armed')) resync()
+  pulling = false; pull.classList.remove('armed')
+})
+
+// 回前台立即对齐（EventSource 重连可能滞后）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { resync(); loadHostInfo() }
+})
+
+/* ---------- boot ---------- */
+resync().then(loadHostInfo)
+openHostStream()
+openMuxStream()
+</script>
+</body>
+</html>

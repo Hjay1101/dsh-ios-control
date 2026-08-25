@@ -26,6 +26,7 @@ import { createGateway } from './gateway.js'
 import { createAdvertiser } from './mdns.js'
 import { createPairingService } from './pairing.js'
 import { PAIRING_PAGE_HTML } from './pairing-page.js'
+import { loadMobilePage } from './mobile-page.js'
 import { defineForkSessionTool } from './fork-session.js'
 import { defineRemoteQrTool, defineRemoteDevicesTool, defineRemoteRecoveryTool } from './tools.js'
 import { encodeQr, renderQr, renderPng } from './qrcode.js'
@@ -231,6 +232,7 @@ export function apply(ctx, config) {
     resolveDevice: pairingService === null
       ? null
       : (deviceId) => pairingService.listDevices().find((d) => d.deviceId === deviceId)?.name ?? null,
+    mobilePage: loadMobilePage,
   })
 
   ctx.tools.register(defineForkSessionTool(ctx))
@@ -283,7 +285,7 @@ export function apply(ctx, config) {
           // non-fatal: another instance may already provide the service
         }
         log(`gateway on ${cfg.host}:${gateway.port} → ${target().host}:${target().port}`)
-        log(`link keepalive ${cfg.keepaliveIntervalMs > 0 ? `every ${Math.round(cfg.keepaliveIntervalMs / 1000)}s when idle` : 'off'} · status: http://127.0.0.1:${gateway.port}/status`)
+        log(`link keepalive ${cfg.keepaliveIntervalMs > 0 ? `every ${Math.round(cfg.keepaliveIntervalMs / 1000)}s when idle` : 'off'} · status: http://127.0.0.1:${gateway.port}/status · mobile: /m`)
         if (pairingService !== null) {
           const recovery = pairingService.recoveryStatus()
           if (recovery.enabled) log(`recovery pairing enabled (source: ${recovery.source})`)
