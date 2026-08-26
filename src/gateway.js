@@ -295,21 +295,38 @@ export function createGateway({
     // official UI root — behind the gate, before the proxy. Exact-path only;
     // anything else under /m* keeps flowing to the upstream. A missing page
     // asset (mobilePage() → null) falls through to the proxy untouched.
+    // ETag revalidation: on a high-latency relay every KB costs a full
+    // round-trip, so the loader pairs the HTML with a strong ETag and the
+    // route honors If-None-Match → 304 (a tiny request instead of a 42KB
+    // body) while content changes still propagate on the next call.
     if (
       (req.method === 'GET' || req.method === 'HEAD') &&
       typeof mobilePage === 'function'
     ) {
       const mPath = req.url.split('?', 1)[0]
       if (mPath === '/m' || mPath === '/m/') {
-        const html = mobilePage()
-        if (html !== null) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store',
-            'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'",
-          })
-          res.end(req.method === 'HEAD' ? undefined : html)
-          return
+        const asset = mobilePage()
+        if (asset !== null && asset !== undefined) {
+          const html = typeof asset === 'string' ? asset : asset.html
+          const etag = typeof asset === 'string' ? null : (asset.etag ?? null)
+          // object-shaped but broken (no html): do NOT return here — that ends
+          // onRequest and the response dies; fall through to the proxy instead.
+          if (html !== undefined) {
+            if (etag !== null && req.headers['if-none-match'] === etag) {
+              res.writeHead(304, { 'etag': etag, 'cache-control': 'no-cache' })
+              res.end()
+              return
+            }
+            const headers = {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-cache',
+              'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'",
+            }
+            if (etag !== null) headers['etag'] = etag
+            res.writeHead(200, headers)
+            res.end(req.method === 'HEAD' ? undefined : html)
+            return
+          }
         }
       }
     }

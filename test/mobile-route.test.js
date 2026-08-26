@@ -47,7 +47,7 @@ const authed = { authorization: 'Basic dXNlcjpwYXNz' }
 
 test('/m serves the PWA page behind auth', async () => {
   const upstream = await startUpstream()
-  const gateway = await startGateway(upstream, { mobilePage: () => '<html>remote pwa</html>' })
+  const gateway = await startGateway(upstream, { mobilePage: () => ({ html: '<html>remote pwa</html>', etag: '"v1"' }) })
   try {
     const denied = await fetch(`${base(gateway)}/m`)
     assert.equal(denied.status, 401)
@@ -66,7 +66,7 @@ test('/m serves the PWA page behind auth', async () => {
 
 test('/m is exact-path: subpaths keep proxying; query still routes (deep links)', async () => {
   const upstream = await startUpstream()
-  const gateway = await startGateway(upstream, { mobilePage: () => '<html>remote pwa</html>' })
+  const gateway = await startGateway(upstream, { mobilePage: () => ({ html: '<html>remote pwa</html>', etag: '"v1"' }) })
   try {
     // subpath → proxy
     const sub = await fetch(`${base(gateway)}/m/extra`, { headers: authed })
@@ -84,7 +84,7 @@ test('/m is exact-path: subpaths keep proxying; query still routes (deep links)'
 
 test('HEAD /m answers headers without a body', async () => {
   const upstream = await startUpstream()
-  const gateway = await startGateway(upstream, { mobilePage: () => '<html>remote pwa</html>' })
+  const gateway = await startGateway(upstream, { mobilePage: () => ({ html: '<html>remote pwa</html>', etag: '"v1"' }) })
   try {
     const res = await fetch(`${base(gateway)}/m`, { method: 'HEAD', headers: authed })
     assert.equal(res.status, 200)
@@ -112,13 +112,50 @@ test('page loader runs per request (no caching — hot edits land)', async () =>
   const upstream = await startUpstream()
   let calls = 0
   const gateway = await startGateway(upstream, {
-    mobilePage: () => `<html>v${++calls}</html>`,
+    mobilePage: () => { const n = ++calls; return { html: `<html>v${n}</html>`, etag: `"e${n}"` } },
   })
   try {
     const first = await fetch(`${base(gateway)}/m`, { headers: authed })
     const second = await fetch(`${base(gateway)}/m`, { headers: authed })
     assert.equal(await first.text(), '<html>v1</html>')
     assert.equal(await second.text(), '<html>v2</html>')
+  } finally {
+    await gateway.close()
+    upstream.server.close()
+  }
+})
+
+test('ETag revalidation: same If-None-Match returns 304, mismatch returns 200', async () => {
+  const upstream = await startUpstream()
+  const gateway = await startGateway(upstream, {
+    mobilePage: () => ({ html: '<html>remote pwa</html>', etag: '"v1"' }),
+  })
+  try {
+    const hit = await fetch(`${base(gateway)}/m`, { headers: { ...authed, 'if-none-match': '"v1"' } })
+    assert.equal(hit.status, 304)
+    assert.equal(await hit.text(), '')
+
+    const miss = await fetch(`${base(gateway)}/m`, { headers: { ...authed, 'if-none-match': '"v2"' } })
+    assert.equal(miss.status, 200)
+    assert.equal(miss.headers.get('etag'), '"v1"')
+    assert.equal(await miss.text(), '<html>remote pwa</html>')
+    assert.ok(!upstream.seen.length) // never reached the proxy
+  } finally {
+    await gateway.close()
+    upstream.server.close()
+  }
+})
+
+test('object-shaped page without html falls through to the proxy', async () => {
+  const upstream = await startUpstream()
+  const gateway = await startGateway(upstream, {
+    mobilePage: () => ({ etag: '"x"' }),
+  })
+  try {
+    const res = await fetch(`${base(gateway)}/m`, { headers: authed })
+    assert.equal(res.status, 200)
+    assert.equal(await res.text(), '<html>official ui</html>')
+    assert.ok(upstream.seen.includes('/m'))
   } finally {
     await gateway.close()
     upstream.server.close()

@@ -987,10 +987,14 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 
-/* ---------- boot ---------- */
-resync().then(loadHostInfo)
+/* ---------- boot ----------
+ * 高延迟链路（DERP 中继 ~400ms RTT）下一切串行都是成本：
+ * 数据同步、宿主信息、两条 WS 同时发起，最慢的那路决定首屏。
+ * host WS onopen 内的 resync/loadHostInfo 覆盖重连场景；syncing 锁去重。 */
 openHostStream()
 openMuxStream()
+resync()
+loadHostInfo()
 // notify 深链：/m?s=<sessionId> 直达会话
 const deepSid = new URLSearchParams(location.search).get('s')
 if (deepSid) openDetail(deepSid)
