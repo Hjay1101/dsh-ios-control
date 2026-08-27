@@ -731,8 +731,8 @@ async function loadHistory(older) {
   if (!sid) return
   try {
     const payload = older
-      ? { sessionId: sid, maxMessages: 50, beforeSeq: state.dBaseSeq }
-      : { sessionId: sid, maxMessages: 50 }
+      ? { sessionId: sid, maxMessages: 30, beforeSeq: state.dBaseSeq }
+      : { sessionId: sid, maxMessages: 30 }
     const r = await rpc('session.history', payload)
     if (!sid || state.detail !== sid) return
     if (!r.ok) { $('#stream').innerHTML = '<div class="empty">加载失败：' + esc(r.error?.message ?? '?') + '</div>'; return }

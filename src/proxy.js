@@ -4,14 +4,29 @@
  * The Host header is rewritten to the loopback origin so the connection
  * layer's trust fence (loopback-Host DNS-rebinding guard) accepts proxied
  * requests; hop-by-hop headers are dropped per RFC 7230 §6.1.
+ *
+ * Payload compression: the upstream webserver serves large JSON responses
+ * (e.g. session.history returns raw event sequences measuring hundreds of
+ * KiB) uncompressed regardless of Accept-Encoding. On a slow phone over a
+ * high-latency DERP relay that full body costs seconds. When the client
+ * advertises gzip and the upstream did not already encode the body, this
+ * proxy gzips compressible JSON/text responses on the fly (~10x smaller);
+ * the browser's request still names the original encoding, so the upstream
+ * is never asked for a form it cannot produce.
  */
 
 import { request } from 'node:http'
+import { createGzip } from 'node:zlib'
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailer', 'transfer-encoding', 'upgrade',
 ])
+
+/** Is this content-type a JSON document (exact or +json structured suffix)? */
+function isJsonContentType(ct) {
+  return ct === 'application/json' || ct.endsWith('+json')
+}
 
 function forwardedHeaders(req, target) {
   const headers = { ...req.headers }
@@ -41,6 +56,26 @@ export function proxyRequest(req, res, target, onError, { onResponded } = {}) {
     const connectionTokens = String(upstreamRes.headers.connection ?? '')
       .split(',').map((token) => token.trim().toLowerCase())
     for (const header of [...HOP_BY_HOP, ...connectionTokens]) delete headers[header]
+    // Gzip large JSON RPC responses for gzip-capable clients (see module
+    // doc). Restrict to JSON documents: RPC responses are finite complete
+    // bodies, while text/html|plain may be endless streams (SSE-style) whose
+    // first chunk must reach the client immediately — gzip's internal buffer
+    // would stall those. Never double-encode, never touch binary payloads.
+    const ct = String(headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
+    const acceptGzip = String(req.headers['accept-encoding'] ?? '').split(',').some((t) => t.trim().split(';')[0] === 'gzip')
+    const wantsCompress = acceptGzip && !headers['content-encoding'] && isJsonContentType(ct)
+    if (wantsCompress) {
+      delete headers['content-length']
+      delete headers['etag'] // entity changed under this ETag; drop rather than mislead
+      headers['content-encoding'] = 'gzip'
+      res.writeHead(upstreamRes.statusCode, headers)
+      const gz = createGzip({ level: 6 })
+      upstreamRes.pipe(gz).pipe(res)
+      gz.on('error', () => res.destroy())
+      upstreamRes.on('aborted', () => res.destroy())
+      upstreamRes.on('error', () => res.destroy())
+      return
+    }
     res.writeHead(upstreamRes.statusCode, headers)
     // A dead upstream mid-body surfaces on the RESPONSE stream (aborted +
     // error); the request itself only ever emits 'close'. Tear the client
