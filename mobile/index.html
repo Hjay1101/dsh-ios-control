@@ -622,18 +622,51 @@ async function answer(key, action) {
 }
 
 /* ---------- 会话详情 ---------- */
-// 详情缓存：渲染后的 HTML + 分页锚点，重进会话秒开（不再重复拉 500KB+ 历史）
-state.hist = new Map() // sessionId → {html, hasMore, baseSeq, ts}
+// 详情缓存：渲染后的 HTML + 分页锚点，重进会话秒开（不再重复拉 500KB+ 历史）。
+// 持久化到 localStorage：冷启动（关掉页面重开）也秒开。内存→磁盘双份，
+// 磁盘仅落盘小型会话，防超配额。
+state.hist = new Map()
 const HIST_TTL_MS = 30 * 60_000
 const HIST_MAX = 40
+const HIST_KEY = 'dsh-hist-v1'
+const HIST_DISK_MAX_HTML = 200_000 // 单会话 HTML 超过此值不落盘（只留内存）
+const HIST_DISK_TOTAL = 2_000_000
+function histLoad() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HIST_KEY) ?? '{}')
+    return new Map(Object.entries(raw))
+  } catch { return new Map() }
+}
+function histPersist() {
+  try {
+    let total = 0, out = {}
+    for (const [sid, h] of state.hist) {
+      if (h.html.length > HIST_DISK_MAX_HTML) continue
+      out[sid] = { ...h, html: h.html }
+      total += h.html.length
+      if (total > HIST_DISK_TOTAL) break
+    }
+    localStorage.setItem(HIST_KEY, JSON.stringify(out))
+  } catch { /* 容量满/隐私模式：忽略 */ }
+}
+let histWriteTimer = null
+function histSchedulePersist() {
+  if (histWriteTimer !== null) return
+  histWriteTimer = setTimeout(() => { histWriteTimer = null; histPersist() }, 1500)
+}
+state.hist = histLoad()
 function histGet(sid) {
   const h = state.hist.get(sid)
-  if (h && Date.now() - h.ts > HIST_TTL_MS) { state.hist.delete(sid); return null }
+  if (h && Date.now() - h.ts > HIST_TTL_MS) { state.hist.delete(sid); histPersist(); return null }
   return h
 }
 function histPut(sid, h) {
   state.hist.set(sid, h)
-  if (state.hist.size > HIST_MAX) state.hist.delete(state.hist.keys().next().value)
+  if (state.hist.size > HIST_MAX) {
+    state.hist.delete(state.hist.keys().next().value)
+    histPersist()
+  }
+  histSchedulePersist()
 }
 
 async function openDetail(sid) {
@@ -772,7 +805,7 @@ async function loadHistory(older) {
       anchor?.scrollIntoView()
       // 分页加载追加到缓存前面，保持锚点完整
       const prev = state.hist.get(sid)
-      if (prev) { prev.html = html.join('') + prev.html; prev.baseSeq = state.dBaseSeq; prev.ts = Date.now() }
+      if (prev) { prev.html = html.join('') + prev.html; prev.baseSeq = state.dBaseSeq; prev.ts = Date.now(); histSchedulePersist() }
     } else {
       $('#stream').innerHTML = html.length > 0 ? html.join('') : '<div class="empty">还没有消息</div>'
       // innerHTML rewrite drops the live node; rebuild it and restore any
@@ -874,7 +907,7 @@ function onDetailEvent(frame) {
     const h = state.hist.get(frame.sessionId)
     if (!h) return
     const html = eventToHtml({ event, view: frame.view })
-    if (html) { h.html += html; h.ts = Date.now() }
+    if (html) { h.html += html; h.ts = Date.now(); histSchedulePersist() }
     return
   }
   // 流式 chunk：思维链与正文实时增量
@@ -894,7 +927,7 @@ function onDetailEvent(frame) {
   if (!html) return
   // 当前会话的实体事件同时进缓存（后台刷新/重进时保持连续）
   const h = state.hist.get(frame.sessionId)
-  if (h) { h.html += html; h.ts = Date.now() }
+  if (h) { h.html += html; h.ts = Date.now(); histSchedulePersist() }
   const stream = $('#stream')
   const atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80
   $('#live').insertAdjacentHTML('beforebegin', html)
