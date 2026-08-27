@@ -622,6 +622,20 @@ async function answer(key, action) {
 }
 
 /* ---------- 会话详情 ---------- */
+// 详情缓存：渲染后的 HTML + 分页锚点，重进会话秒开（不再重复拉 500KB+ 历史）
+state.hist = new Map() // sessionId → {html, hasMore, baseSeq, ts}
+const HIST_TTL_MS = 30 * 60_000
+const HIST_MAX = 40
+function histGet(sid) {
+  const h = state.hist.get(sid)
+  if (h && Date.now() - h.ts > HIST_TTL_MS) { state.hist.delete(sid); return null }
+  return h
+}
+function histPut(sid, h) {
+  state.hist.set(sid, h)
+  if (state.hist.size > HIST_MAX) state.hist.delete(state.hist.keys().next().value)
+}
+
 async function openDetail(sid) {
   state.detail = sid
   const s = state.sessions.get(sid)
@@ -630,13 +644,25 @@ async function openDetail(sid) {
   state.dHasMore = false
   $('#dtitle').textContent = state.dTitle
   $('#detail').classList.add('open')
-  $('#stream').innerHTML = '<div class="empty">加载中…</div><div id="live"></div>'
   clearLive()
   clearTurn()
   $('#input').value = ''
   renderAskCard()
   loadModels(sid)
-  await loadHistory(false)
+  const cached = histGet(sid)
+  if (cached) {
+    // 秒开：先渲染缓存，同时后台静默刷新拿最新
+    state.dHasMore = cached.hasMore
+    state.dBaseSeq = cached.baseSeq
+    $('#stream').innerHTML = cached.html || '<div class="empty">还没有消息</div>'
+    $('#stream').insertAdjacentHTML('beforeend', '<div id="live"></div>')
+    renderLive(false)
+    renderMoreButton()
+    loadHistory(false) // fire-and-forget 刷新
+  } else {
+    $('#stream').innerHTML = '<div class="empty">加载中…</div><div id="live"></div>'
+    await loadHistory(false)
+  }
   $('#stream').scrollTop = $('#stream').scrollHeight
 }
 function closeDetail() {
@@ -744,17 +770,22 @@ async function loadHistory(older) {
       const anchor = $('#stream').firstElementChild
       $('#stream').insertAdjacentHTML('afterbegin', html.join(''))
       anchor?.scrollIntoView()
+      // 分页加载追加到缓存前面，保持锚点完整
+      const prev = state.hist.get(sid)
+      if (prev) { prev.html = html.join('') + prev.html; prev.baseSeq = state.dBaseSeq; prev.ts = Date.now() }
     } else {
       $('#stream').innerHTML = html.length > 0 ? html.join('') : '<div class="empty">还没有消息</div>'
       // innerHTML rewrite drops the live node; rebuild it and restore any
       // in-flight stream buffer.
       $('#stream').insertAdjacentHTML('beforeend', '<div id="live"></div>')
       renderLive(false)
+      histPut(sid, { html: html.length > 0 ? html.join('') : '', hasMore: state.dHasMore, baseSeq: state.dBaseSeq, ts: Date.now() })
     }
     computeTurnFromEvents(events)
     renderMoreButton()
   } catch (err) {
-    $('#stream').innerHTML = '<div class="empty">加载失败（' + esc(err.message) + '）</div>'
+    // 后台刷新失败时保留已显示的缓存内容，不冲掉已有画面
+    if (!histGet(sid)) $('#stream').innerHTML = '<div class="empty">加载失败（' + esc(err.message) + '）</div>'
   }
 }
 function renderMoreButton() {
@@ -833,9 +864,19 @@ function renderLive(forceScroll) {
 function clearLive() { liveThink = ''; liveText = ''; liveOpen = false; renderLive(false) }
 
 function onDetailEvent(frame) {
-  if (!frame || frame.sessionId !== state.detail) return
+  if (!frame || typeof frame.sessionId !== 'string') return
   const event = frame.event ?? frame
   const t = event.type
+  const here = frame.sessionId === state.detail
+  // 非当前会话：仅当它有详情缓存时把实体事件追加进缓存（列表页期间
+  // 新消息也进缓存，重进详情时秒开且不丢消息）
+  if (!here) {
+    const h = state.hist.get(frame.sessionId)
+    if (!h) return
+    const html = eventToHtml({ event, view: frame.view })
+    if (html) { h.html += html; h.ts = Date.now() }
+    return
+  }
   // 流式 chunk：思维链与正文实时增量
   if (t === 'assistant/chunk') {
     const c = (event.data ?? {}).chunk
@@ -851,6 +892,9 @@ function onDetailEvent(frame) {
   else if (t === 'turn/end' && state.turnStart !== null) { clearTurn() }
   const html = eventToHtml(frame)
   if (!html) return
+  // 当前会话的实体事件同时进缓存（后台刷新/重进时保持连续）
+  const h = state.hist.get(frame.sessionId)
+  if (h) { h.html += html; h.ts = Date.now() }
   const stream = $('#stream')
   const atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80
   $('#live').insertAdjacentHTML('beforebegin', html)
