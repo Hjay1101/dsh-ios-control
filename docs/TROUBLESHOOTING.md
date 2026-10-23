@@ -13,7 +13,7 @@
 | DSH web（真实上游） | ✅ 运行 | `127.0.0.1:49152`（DSH Desktop GUI，本会话所在进程） |
 | 插件网关 | ❌ **未运行** | `runner-gateway.mjs` 已被 kill，`127.0.0.1:3081` 未监听 |
 | localtunnel 客户端 | ❌ **已再次退出** | 见 §2.3：第二次规律性退出（11:04→11:27，约 23 分钟） |
-| 隧道域名 | （已失效） | `https://slow-clocks-mix.loca.lt`（客户端退出后不可达） |
+| 隧道域名 | （已失效） | `https://<tunnel-domain>.loca.lt`（客户端退出后不可达） |
 | 隧道连通性 | ❌ 不可达 | 客户端已退出 |
 | scan-me.png | ✅ 存在 | 见 §4 |
 
